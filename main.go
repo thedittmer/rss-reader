@@ -257,11 +257,12 @@ func (a *App) showSearchResults(query string, results []models.FeedItem) {
 		// Show navigation help
 		fmt.Println()
 		fmt.Println(ui.DimStyle.Render("Navigation:"))
-		fmt.Printf("%s ↑/↓ or j/k    Navigate items\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s ←/→ or h/l    Change pages\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s ↑/↓          Navigate items\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s ←/→          Change pages\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s Enter         View selected article\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s o             Open in browser\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s b             Back to main menu\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s h             Show help\n", ui.ArrowStyle.Render())
 		fmt.Println()
 
 		// Read key input
@@ -316,29 +317,27 @@ func (a *App) showSearchResults(query string, results []models.FeedItem) {
 		}
 
 		switch key.key {
-		case 'j', 66: // Down arrow
+		case 'B': // Down arrow
 			if selectedItem < min(itemsPerPage-1, end-start-1) {
 				selectedItem++
 			}
-		case 'k', 65: // Up arrow
+		case 'A': // Up arrow
 			if selectedItem > 0 {
 				selectedItem--
 			}
-		case 'l', 67: // Right arrow
+		case 'C': // Right arrow
 			if currentPage < totalPages-1 {
 				currentPage++
 				selectedItem = 0
 			}
-		case 68, 'h': // Left arrow or 'h' for left
-			if key.key == 'h' {
-				a.showSearchHelp()
-				continue
-			}
-			// Otherwise handle as left arrow
+		case 'D': // Left arrow
 			if currentPage > 0 {
 				currentPage--
 				selectedItem = 0
 			}
+		case 'h': // Help
+			a.showSearchHelp()
+			continue
 		case 13: // Enter
 			itemIndex := start + selectedItem
 			if itemIndex < len(results) {
@@ -351,22 +350,28 @@ func (a *App) showSearchResults(query string, results []models.FeedItem) {
 }
 
 func (a *App) viewArticleSequence(items []models.FeedItem, startIndex int) {
-	for i := startIndex; i < len(items); i++ {
+	currentIndex := startIndex
+
+	for currentIndex < len(items) {
 		clearScreen()
-		fmt.Printf("%s Article %d of %d\n", ui.DimStyle.Render("→"), i+1, len(items))
+		fmt.Printf("%s Article %d of %d\n", ui.DimStyle.Render("→"), currentIndex+1, len(items))
 		fmt.Println()
 
-		continueViewing := a.displayArticle(items[i])
+		item := items[currentIndex]
+		continueViewing := a.displayArticle(item)
+
 		if !continueViewing {
-			return // Return to results view
+			return // User chose to go back
 		}
+
+		currentIndex++
 	}
 
 	// Show end of results message
 	clearScreen()
 	fmt.Println(ui.HeaderStyle.Render("End of Results"))
 	fmt.Println()
-	fmt.Println(ui.DimStyle.Render("Press Enter to return to results..."))
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
 	readLine()
 }
 
@@ -397,30 +402,27 @@ func (a *App) showRecommendations() {
 		return
 	}
 
-	// Sort by score
-	sort.Slice(recommendations, func(i, j int) bool {
-		return recommendations[i].Score > recommendations[j].Score
-	})
-
-	// Show paginated recommendations
+	// Initialize variables
 	currentPage := 0
 	itemsPerPage := 10
 	selectedItem := 0
-
-	// Show sorting options
-	fmt.Printf("%s Sorting by: %s\n",
-		ui.ArrowStyle.Render(),
-		"Relevance")
-	fmt.Println()
+	sortBy := SortByScore // Track current sort mode
 
 	for {
 		clearScreen()
 		fmt.Println(ui.HeaderStyle.Render("Recommended Articles"))
 		fmt.Printf("%s Found %d recommendations\n", ui.DimStyle.Render("→"), len(recommendations))
+		sortMode := "Relevance"
+		if sortBy == SortByDate {
+			sortMode = "Date"
+		}
+		fmt.Printf("%s Sorting by: %s\n",
+			ui.ArrowStyle.Render(),
+			sortMode)
 		fmt.Println()
 
 		// Sort articles
-		sorted := a.sortRecommendations(recommendations, SortByScore)
+		sorted := a.sortRecommendations(recommendations, sortBy)
 
 		// Calculate pagination
 		totalPages := (len(sorted) + itemsPerPage - 1) / itemsPerPage
@@ -442,7 +444,7 @@ func (a *App) showRecommendations() {
 				ui.DateStyle.Render(article.Item.Published.Format("2006-01-02")))
 			fmt.Printf("   %s %.2f\n",
 				ui.DimStyle.Render("Score:"),
-				ui.ScoreStyle.Render(fmt.Sprintf("%.2f", article.Score)))
+				article.Score)
 			fmt.Println()
 		}
 
@@ -456,15 +458,16 @@ func (a *App) showRecommendations() {
 
 		// Show commands
 		fmt.Println(ui.ArrowStyle.Render() + "Commands:")
-		fmt.Printf("%s (n)ext/(p)rev    Navigate pages\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s (s)ort           Toggle sort (relevance/date)\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s (v)iew [number]  View article details\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s (o)[number]      Open in browser\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s (b)ack           Return to main menu\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s (h)elp           Show help\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s ↑/↓          Navigate items\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s ←/→          Change pages\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (s)ort       Toggle sort (relevance/date)\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (v)iew       View article details\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (o)[number]  Open in browser\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (b)ack       Return to main menu\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (h)elp       Show help\n", ui.ArrowStyle.Render())
 		fmt.Println()
 
-		// Add keyboard navigation
+		// Handle keyboard input
 		key, err := readKey()
 		if err != nil {
 			continue
@@ -515,29 +518,29 @@ func (a *App) showRecommendations() {
 			continue
 		}
 
-		// Handle navigation similar to showSearchResults
+		// Handle navigation
 		switch key.key {
-		case 'j', 66: // Down arrow
+		case 'B': // Down arrow
 			if selectedItem < min(itemsPerPage-1, end-start-1) {
 				selectedItem++
 			}
-		case 'k', 65: // Up arrow
+		case 'A': // Up arrow
 			if selectedItem > 0 {
 				selectedItem--
 			}
-		case 'l', 67: // Right arrow, next page
+		case 'C': // Right arrow
 			if currentPage < totalPages-1 {
 				currentPage++
 				selectedItem = 0
 			} else {
 				showError("Already on last page")
 			}
-		case 68: // Left arrow
+		case 'D': // Left arrow
 			if currentPage > 0 {
 				currentPage--
 				selectedItem = 0
 			}
-		case 'h': // Help - separate case for help command
+		case 'h': // Help
 			a.showRecommendationsHelp()
 			continue
 		case 'n': // Next page
@@ -555,12 +558,16 @@ func (a *App) showRecommendations() {
 				showError("Already on first page")
 			}
 		case 's': // Sort
-			if currentPage == 0 {
-				currentPage = totalPages - 1
+			if sortBy == SortByScore {
+				sortBy = SortByDate
+				fmt.Println(ui.SuccessStyle.Render("Sorting by date"))
 			} else {
-				currentPage = 0
+				sortBy = SortByScore
+				fmt.Println(ui.SuccessStyle.Render("Sorting by relevance"))
 			}
-		case 'v': // View
+			time.Sleep(1 * time.Second)
+			continue
+		case 'v', 13: // View or Enter
 			itemIndex := start + selectedItem
 			if itemIndex < len(sorted) {
 				// Convert ArticleScore slice to FeedItem slice
@@ -572,16 +579,6 @@ func (a *App) showRecommendations() {
 			}
 		case 'b': // Back
 			return
-		case 13: // Enter
-			itemIndex := start + selectedItem
-			if itemIndex < len(sorted) {
-				// Convert ArticleScore slice to FeedItem slice
-				items := make([]models.FeedItem, len(sorted))
-				for i, score := range sorted {
-					items[i] = score.Item
-				}
-				a.viewArticleSequence(items, itemIndex)
-			}
 		}
 	}
 }
@@ -908,82 +905,73 @@ func (a *App) manageFeeds() {
 	}
 }
 
-func (a *App) displayResults(items []models.FeedItem) {
-	for i, item := range items {
+func (a *App) displayArticle(item models.FeedItem) bool {
+	for {
 		clearScreen()
-		fmt.Printf("%s Article %d of %d\n", ui.DimStyle.Render("→"), i+1, len(items))
+		fmt.Println(ui.TitleStyle.Render(item.Title))
+		fmt.Printf("%s %s\n",
+			ui.DimStyle.Render("Source:"),
+			ui.SourceStyle.Render(item.FeedSource))
+		fmt.Printf("%s %s\n",
+			ui.DimStyle.Render("Published:"),
+			ui.DateStyle.Render(item.Published.Format("2006-01-02")))
+		fmt.Println()
+		fmt.Println(wordWrap(item.Description, 80))
+		fmt.Println()
+		fmt.Printf("%s %s\n",
+			ui.DimStyle.Render("Link:"),
+			ui.LinkStyle.Render(item.Link))
 		fmt.Println()
 
-		continueViewing := a.displayArticle(item)
-		if !continueViewing {
-			return // Only return to main menu if user chooses 'back'
+		// Show commands with enhanced styling
+		fmt.Println(ui.SectionStyle.Render("Commands:"))
+		fmt.Printf("%s %s Mark as interesting and continue\n",
+			ui.KeyStyle.Render("(y)es"),
+			ui.DimStyle.Render("→"))
+		fmt.Printf("%s (n)o      Skip to next article\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (b)ack    Return to results\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (o)pen    Open in browser\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (h)elp    Show help\n", ui.ArrowStyle.Render())
+		fmt.Println()
+
+		// Show tips
+		fmt.Println(ui.DimStyle.Render("Tips:"))
+		fmt.Printf("%s Marking articles as interesting improves recommendations\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s Use 'o' to read full article in your browser\n", ui.ArrowStyle.Render())
+		fmt.Println()
+
+		// Read and handle command
+		fmt.Print(ui.CommandStyle.Render("→ "))
+		cmd := strings.ToLower(readLine())
+
+		switch cmd {
+		case "y", "yes":
+			// Update user profile with interests from this article
+			a.profile.UpdateInterests(item.Title + " " + item.Description)
+			if err := a.store.SaveProfile(a.profile); err != nil {
+				showError("Failed to save profile")
+			} else {
+				showSuccess("Article marked as interesting")
+			}
+			return true
+		case "n", "no":
+			return true
+		case "b", "back":
+			return false
+		case "o", "open":
+			if err := openInBrowser(item.Link); err != nil {
+				showError("Failed to open browser")
+			} else {
+				showSuccess("Opened in browser")
+			}
+			continue
+		case "h", "help":
+			a.showArticleHelp()
+			continue
+		default:
+			showError("Unknown command")
+			continue
 		}
-	}
-
-	// Show end of results message
-	clearScreen()
-	fmt.Println(ui.HeaderStyle.Render("End of Results"))
-	fmt.Println()
-	fmt.Println(ui.DimStyle.Render("Press Enter to return to main menu..."))
-	readLine()
-}
-
-func (a *App) displayArticle(item models.FeedItem) bool {
-	clearScreen()
-	fmt.Println(ui.TitleStyle.Render(item.Title))
-	fmt.Printf("%s %s\n",
-		ui.DimStyle.Render("Source:"),
-		ui.SourceStyle.Render(item.FeedSource))
-	fmt.Printf("%s %s\n",
-		ui.DimStyle.Render("Published:"),
-		ui.DateStyle.Render(item.Published.Format("2006-01-02")))
-	fmt.Println()
-	fmt.Println(wordWrap(item.Description, 80))
-	fmt.Println()
-	fmt.Printf("%s %s\n",
-		ui.DimStyle.Render("Link:"),
-		ui.LinkStyle.Render(item.Link))
-	fmt.Println()
-
-	// Show commands with enhanced styling
-	fmt.Println(ui.SectionStyle.Render("Commands:"))
-	fmt.Printf("%s %s Mark as interesting and continue\n",
-		ui.KeyStyle.Render("(y)es"),
-		ui.DimStyle.Render("→"))
-	fmt.Printf("%s (n)o      Skip to next article\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s (b)ack    Return to main menu\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s (o)pen    Open in browser\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s (h)elp    Show help\n", ui.ArrowStyle.Render())
-	fmt.Println()
-
-	// Show tips
-	fmt.Println(ui.DimStyle.Render("Tips:"))
-	fmt.Printf("%s Marking articles as interesting improves recommendations\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s Use 'o' to read full article in your browser\n", ui.ArrowStyle.Render())
-	fmt.Println()
-
-	// Read and handle command
-	fmt.Print(ui.CommandStyle.Render("→ "))
-	cmd := readLine()
-
-	switch strings.ToLower(cmd) {
-	case "y", "yes":
-		// Handle marking as interesting
-		return true
-	case "n", "no":
-		return true
-	case "b", "back":
-		return false
-	case "o", "open":
-		if err := openInBrowser(item.Link); err != nil {
-			showError("Failed to open browser")
-		}
-		return true
-	case "h", "help":
-		return a.showArticleHelp()
-	default:
-		showError("Unknown command")
-		return true
 	}
 }
 
@@ -1049,17 +1037,17 @@ func readKey() (keyPress, error) {
 		return keyPress{}, err
 	}
 
-	// Handle arrow keys and special keys
-	if buf[0] == 27 && n == 3 {
+	// Handle arrow keys (escape sequences)
+	if n == 3 && buf[0] == 27 && buf[1] == 91 {
 		switch buf[2] {
 		case 65: // Up arrow
-			return keyPress{key: 'k'}, nil
+			return keyPress{key: 'A'}, nil
 		case 66: // Down arrow
-			return keyPress{key: 'j'}, nil
+			return keyPress{key: 'B'}, nil
 		case 67: // Right arrow
-			return keyPress{key: 'l'}, nil
+			return keyPress{key: 'C'}, nil
 		case 68: // Left arrow
-			return keyPress{key: 'h'}, nil
+			return keyPress{key: 'D'}, nil
 		}
 	}
 
