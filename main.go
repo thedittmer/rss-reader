@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mmcdole/gofeed"
 )
 
@@ -39,11 +40,63 @@ type ArticleScore struct {
 	Score float64
 }
 
+// Add this new type for search results
+type SearchResult struct {
+	Item       FeedItem
+	Matches    []string // Snippets showing search term in context
+	MatchCount int
+}
+
 const (
 	userProfileFile = "user_profile.json"
 	maxInterests    = 100  // Maximum number of interests to track
 	minWeight       = 0.1  // Minimum weight to keep an interest
 	decayFactor     = 0.95 // How much to decay weights over time
+)
+
+// Add these style definitions at the top level
+var (
+	// Base styles
+	appStyle = lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#874BFD"))
+
+	searchPromptStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#874BFD")).
+				Bold(true)
+
+	titleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ffffff")).
+			Bold(true)
+
+	subtitleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#87CEEB"))
+
+	textStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF"))
+
+	linkStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#0087BD")).
+			Underline(true)
+
+	infoStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666666")).
+			Italic(true)
+
+	errorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF0000")).
+			Bold(true)
+
+	promptStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#98FB98"))
+
+	dividerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#444444")).
+			SetString("───────────────")
+
+	spinnerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#874BFD"))
 )
 
 func main() {
@@ -131,12 +184,23 @@ func searchFeeds(items []FeedItem) {
 	defer profile.save()
 
 	for {
-		fmt.Print("\nOptions:\n")
-		fmt.Print("1. Search articles\n")
-		fmt.Print("2. Show recommended articles\n")
-		fmt.Print("3. View my interests\n")
-		fmt.Print("4. Exit\n")
-		fmt.Print("\nEnter choice (1-4): ")
+		clearScreen()
+
+		// Show search interface
+		searchUI := []string{
+			"📚 RSS Reader",
+			"───────────────",
+			"",
+			"1. 🔍 Search Articles",
+			"2. ⭐ View Recommended",
+			"3. 📋 View Interests",
+			"4. 🚪 Exit",
+			"",
+			"Enter your choice (1-4)",
+		}
+
+		fmt.Println(appStyle.Render(strings.Join(searchUI, "\n")))
+		fmt.Print(searchPromptStyle.Render("→ "))
 
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
@@ -149,25 +213,123 @@ func searchFeeds(items []FeedItem) {
 		case "3":
 			showInterests(&profile)
 		case "4":
+			clearScreen()
+			fmt.Println(appStyle.Render("Thanks for using RSS Reader! 👋"))
 			return
-		default:
-			fmt.Println("Invalid choice")
 		}
 	}
 }
 
+func clearScreen() {
+	fmt.Print("\033[H\033[2J")
+}
+
+func showSpinner(message string, duration time.Duration) {
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	startTime := time.Now()
+
+	for time.Since(startTime) < duration {
+		for _, frame := range spinner {
+			fmt.Printf("\r%s %s", spinnerStyle.Render(frame), message)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	fmt.Println()
+}
+
 func searchArticles(items []FeedItem, profile *UserProfile) {
-	reader := bufio.NewReader(os.Stdin)
+	for {
+		clearScreen()
 
-	fmt.Print("\nEnter search term: ")
-	searchTerm, _ := reader.ReadString('\n')
-	searchTerm = strings.TrimSpace(searchTerm)
+		// Show search interface
+		searchUI := []string{
+			"🔍 RSS Search",
+			"───────────────",
+			"",
+			"Enter search term or commands:",
+			"  • Type your search terms",
+			"  • Use 'exit' to return to main menu",
+			"",
+		}
 
-	results := advancedSearch(items, searchTerm, SearchOptions{})
-	displayResults(results, profile)
+		fmt.Println(appStyle.Render(strings.Join(searchUI, "\n")))
+
+		// Get search input
+		fmt.Print(searchPromptStyle.Render("→ "))
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		searchTerm := strings.TrimSpace(input)
+
+		if searchTerm == "exit" {
+			return
+		}
+
+		if searchTerm == "" {
+			continue
+		}
+
+		// Show searching animation
+		showSpinner("Searching articles...", 800*time.Millisecond)
+
+		// Perform search
+		var results []FeedItem
+		for _, item := range items {
+			itemText := strings.ToLower(item.Title + " " + item.Description)
+			searchText := strings.ToLower(searchTerm)
+
+			if strings.Contains(itemText, searchText) {
+				results = append(results, item)
+			}
+		}
+
+		// Clear screen for results
+		clearScreen()
+
+		// Show results header
+		fmt.Println(appStyle.Render(fmt.Sprintf(
+			"Search Results for: %s\nFound %d articles\n",
+			searchPromptStyle.Render(searchTerm),
+			len(results))))
+
+		if len(results) == 0 {
+			fmt.Println(infoStyle.Render("No matching articles found."))
+			fmt.Println("\nPress Enter to search again...")
+			reader.ReadString('\n')
+			continue
+		}
+
+		// Display results
+		for i, item := range results {
+			resultBox := []string{
+				fmt.Sprintf("%d. %s", i+1, titleStyle.Render(item.Title)),
+				linkStyle.Render(item.Link),
+				"",
+			}
+			fmt.Println(strings.Join(resultBox, "\n"))
+
+			// Add a small pause between results for better readability
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// Show options
+		fmt.Println(appStyle.Render("\nOptions:"))
+		fmt.Println("• Press Enter to search again")
+		fmt.Println("• Type 'exit' to return to main menu")
+		fmt.Print(searchPromptStyle.Render("\n→ "))
+
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		if choice == "exit" {
+			return
+		}
+	}
 }
 
 func showRecommendations(items []FeedItem, profile *UserProfile) {
+	fmt.Println(titleStyle.Render("\n🎯 Recommended Articles"))
+	fmt.Println(dividerStyle.Render())
+
 	// Score all items based on user interests
 	var scored []ArticleScore
 
@@ -196,20 +358,30 @@ func showRecommendations(items []FeedItem, profile *UserProfile) {
 		return scored[i].Score > scored[j].Score
 	})
 
+	if len(scored) == 0 {
+		fmt.Println(errorStyle.Render("No recommendations yet! Try marking some articles as interesting."))
+		fmt.Print(promptStyle.Render("\nPress Enter to continue..."))
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
+
 	// Display top recommendations
-	fmt.Println("\nRecommended articles:")
 	for i, article := range scored {
-		if i >= 10 { // Show top 10
+		if i >= 10 {
 			break
 		}
+		fmt.Printf("\n%s #%d (Score: %.2f)\n",
+			subtitleStyle.Render("Recommendation"),
+			i+1,
+			article.Score)
 		displayArticle(article.Item, profile)
 	}
 }
 
 func showInterests(profile *UserProfile) {
-	fmt.Println("\nYour interests (word: weight):")
+	fmt.Println(titleStyle.Render("\n📊 Your Interests"))
+	fmt.Println(dividerStyle.Render())
 
-	// Sort interests by weight
 	type weightedWord struct {
 		word   string
 		weight float64
@@ -225,8 +397,14 @@ func showInterests(profile *UserProfile) {
 	})
 
 	for _, ww := range sorted {
-		fmt.Printf("%s: %.2f\n", ww.word, ww.weight)
+		fmt.Printf("%s: %s\n",
+			subtitleStyle.Render(ww.word),
+			textStyle.Render(fmt.Sprintf("%.2f", ww.weight)))
 	}
+
+	fmt.Println(dividerStyle.Render())
+	fmt.Print(promptStyle.Render("\nPress Enter to continue..."))
+	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 func displayResults(items []FeedItem, profile *UserProfile) {
@@ -236,14 +414,33 @@ func displayResults(items []FeedItem, profile *UserProfile) {
 }
 
 func displayArticle(item FeedItem, profile *UserProfile) {
-	fmt.Printf("\nSource: %s\n", item.FeedSource)
-	fmt.Printf("Title: %s\n", item.Title)
-	fmt.Printf("Published: %s\n", item.Published)
-	fmt.Printf("Link: %s\n", item.Link)
-	fmt.Printf("Description: %s\n", item.Description)
+	fmt.Println(dividerStyle.Render())
+
+	fmt.Printf("%s %s\n",
+		subtitleStyle.Render("📰 Source:"),
+		textStyle.Render(item.FeedSource))
+
+	fmt.Printf("%s %s\n",
+		subtitleStyle.Render("📌 Title:"),
+		titleStyle.Render(item.Title))
+
+	fmt.Printf("%s %s\n",
+		subtitleStyle.Render("🕒 Published:"),
+		textStyle.Render(item.Published))
+
+	fmt.Printf("%s %s\n",
+		subtitleStyle.Render("🔗 Link:"),
+		linkStyle.Render(item.Link))
+
+	fmt.Printf("%s %s\n",
+		subtitleStyle.Render("📝 Description:"),
+		textStyle.Render(item.Description))
+
+	fmt.Println(dividerStyle.Render())
+
+	fmt.Print(promptStyle.Render("\nMark as interesting? (y/n/q): "))
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("\nMark as interesting? (y/n/q): ")
 	response, _ := reader.ReadString('\n')
 	response = strings.ToLower(strings.TrimSpace(response))
 
@@ -252,10 +449,9 @@ func displayArticle(item FeedItem, profile *UserProfile) {
 	}
 
 	if response == "y" {
-		// Update user interests based on this article
 		profile.updateInterests(item.Title + " " + item.Description)
 		profile.ReadArticles[item.Link] = true
-		fmt.Println("Added to your interests!")
+		fmt.Println(titleStyle.Render("✨ Added to your interests!"))
 	}
 }
 
