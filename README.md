@@ -2,8 +2,6 @@
 
 A feature-rich terminal-based RSS reader written in Go, with intelligent article recommendations based on your interests.
 
-![Terminal RSS Reader](screenshot.png) <!-- You might want to add a screenshot here -->
-
 ## Features
 
 - 🎨 Beautiful terminal UI with vibrant colors and modern design
