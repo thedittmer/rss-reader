@@ -81,17 +81,62 @@ go build
 
 ## Configuration
 
-The application stores its configuration in `~/.rss-reader/`:
-- `profile.json`: User preferences and interests
-- `feeds.txt`: RSS feed URLs
+The application automatically creates and manages its configuration in the `.rss-reader` directory within your home folder:
+
+- On macOS/Linux: `/Users/yourusername/.rss-reader/`
+- On Windows: `C:\Users\yourusername\.rss-reader\`
+
+### Configuration Files
+
+These files are automatically created when you first run the application:
+
+#### profile.json
+- Stores your personal preferences and interests
+- Automatically created when you first run the app or add interests
+- Contains interest weights and reading history
+- Example structure:
+```json
+{
+    "Interests": {
+        "technology": 1.5,
+        "programming": 2.0,
+        "golang": 1.8
+    },
+    "ReadArticles": {},
+    "LastUpdated": "2024-03-03T16:23:45Z"
+}
+```
+
+#### feeds.txt
+- Stores your RSS feed subscriptions
+- Created with default feeds on first run
+- You can edit this file directly or use the in-app feed manager
+- Example structure:
+```
+# RSS Feed URLs (one per line)
+# Lines starting with # are comments
+https://lessnews.dev/rss.xml
+https://blog.golang.org/feed.atom
+https://news.ycombinator.com/rss
+https://dev.to/feed
+```
 
 ### Default Feeds
 
-The application comes with some default RSS feeds:
+The application comes with these default RSS feeds:
 - Less News (https://lessnews.dev/rss.xml)
 - Go Blog (https://blog.golang.org/feed.atom)
 - Hacker News (https://news.ycombinator.com/rss)
 - Dev.to (https://dev.to/feed)
+
+You can modify these feeds using the feed manager (`f` in the main menu) or by directly editing `~/.rss-reader/feeds.txt`.
+
+### Data Persistence
+
+- All changes to interests and feeds are automatically saved
+- Configuration files are preserved between application updates
+- Each user on the system maintains their own configuration
+- Files are created with appropriate permissions (0644 for files, 0755 for directories)
 
 ## Project Structure
 
