@@ -1,5 +1,0 @@
-https://lessnews.dev/rss.xml
-https://blog.golang.org/feed.atom
-https://news.ycombinator.com/rss
-# You can add comments with #
-https://dev.to/feed

@@ -1,4 +1,4 @@
-module rss-reader
+module github.com/thedittmer/rss-reader
 
 go 1.24.0
 

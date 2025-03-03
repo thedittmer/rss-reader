@@ -1,0 +1,14 @@
+# User data directory (now in ~/.rss-reader)
+.rss-reader/
+
+# Go binaries
+bin/
+rss-reader
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store 
