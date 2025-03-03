@@ -22,4 +22,5 @@ require (
 	golang.org/x/net v0.4.0 // indirect
 	golang.org/x/sys v0.24.0 // indirect
 	golang.org/x/text v0.5.0 // indirect
+	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211
 )

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,7 @@ func NewStorage() (*Storage, error) {
 }
 
 func (s *Storage) SaveProfile(profile *models.UserProfile) error {
+	log.Printf("Saving profile with %d interests", len(profile.Interests))
 	path := filepath.Join(s.dataDir, "profile.json")
 	tempPath := path + ".tmp"
 

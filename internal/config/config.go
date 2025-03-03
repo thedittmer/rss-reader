@@ -22,6 +22,12 @@ type Config struct {
 		ShowReadStatus bool
 		DateFormat     string
 	}
+	Keyboard struct {
+		NextPage    string `json:"nextPage"`
+		PrevPage    string `json:"prevPage"`
+		OpenArticle string `json:"openArticle"`
+		Back        string `json:"back"`
+	}
 }
 
 func LoadFeedsFromFile(filename string) ([]string, error) {

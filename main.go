@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
-	"math"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,172 +14,44 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"encoding/xml"
+	"io"
+	"net/http"
+	"net/url"
+
 	"github.com/mmcdole/gofeed"
 	"github.com/thedittmer/rss-reader/internal/models"
 	"github.com/thedittmer/rss-reader/internal/storage"
+	"github.com/thedittmer/rss-reader/internal/ui"
+	"golang.org/x/term"
 )
 
-type FeedItem struct {
-	Title       string
-	Description string
-	Link        string
-	Published   string
-	FeedSource  string
-}
-
-type SearchOptions struct {
-	StartDate time.Time
-	EndDate   time.Time
-	Source    string
-}
-
-type UserProfile struct {
-	Interests    map[string]float64 // word -> weight
-	ReadArticles map[string]bool    // article URLs that have been read
-	LastUpdated  time.Time
-}
-
-type ArticleScore struct {
-	Item  FeedItem
-	Score float64
-}
-
-// Add this new type for search results
-type SearchResult struct {
-	Item       FeedItem
-	Matches    []string // Snippets showing search term in context
-	MatchCount int
-}
-
+// Constants
 const (
-	userProfileFile = "user_profile.json"
-	maxInterests    = 100  // Maximum number of interests to track
-	minWeight       = 0.1  // Minimum weight to keep an interest
-	decayFactor     = 0.95 // How much to decay weights over time
+	SortByScore = iota
+	SortByDate
+	Version = "1.0.0"
 )
 
-// Add these style definitions at the top level
-var (
-	// Base styles
-	appStyle = lipgloss.NewStyle().
-			Padding(1, 2).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#874BFD"))
-
-	searchPromptStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#874BFD")).
-				Bold(true)
-
-	titleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ffffff")).
-			Bold(true)
-
-	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#87CEEB"))
-
-	textStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFFFF"))
-
-	linkStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#0087BD")).
-			Underline(true)
-
-	infoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666")).
-			Italic(true)
-
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF0000")).
-			Bold(true)
-
-	promptStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#98FB98"))
-
-	dividerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#444444")).
-			SetString("───────────────")
-
-	spinnerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#874BFD"))
-
-	// New styles for better visual hierarchy
-	headerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFA07A")).
-			Bold(true).
-			Padding(0, 0, 1, 0)
-
-	menuItemStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#98FB98"))
-
-	selectedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#2D2D2D")).
-			Foreground(lipgloss.Color("#FFA07A"))
-
-	statusBarStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#333333")).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Padding(0, 1)
-
-	// Add keyboard shortcut hints
-	shortcutStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666")).
-			Italic(true)
-)
-
-// Define weightedWord type at package level
-type weightedWord struct {
-	word   string
-	weight float64
+// Types
+type App struct {
+	store   *storage.Storage
+	profile *models.UserProfile
+	feeds   []string
+	items   []models.FeedItem
 }
 
-// Add a status bar component
-type StatusBar struct {
-	CurrentFeeds  int
-	TotalArticles int
-	LastUpdated   time.Time
-	InterestCount int
+type keyPress struct {
+	key  byte
+	char rune
 }
 
-func (s StatusBar) Render() string {
-	return statusBarStyle.Render(fmt.Sprintf(
-		"Feeds: %d | Articles: %d | Interests: %d | Last Updated: %s",
-		s.CurrentFeeds,
-		s.TotalArticles,
-		s.InterestCount,
-		s.LastUpdated.Format("15:04:05"),
-	))
-}
-
-// Add keyboard navigation support
-type MenuItem struct {
-	Label    string
-	Shortcut string
-	Action   func()
-}
-
-func renderMenu(items []MenuItem, selected int) string {
-	var menu strings.Builder
-	for i, item := range items {
-		style := menuItemStyle
-		if i == selected {
-			style = selectedStyle
-		}
-		menu.WriteString(fmt.Sprintf("%s %s %s\n",
-			style.Render(item.Label),
-			strings.Repeat(" ", 20-len(item.Label)),
-			shortcutStyle.Render(item.Shortcut),
-		))
-	}
-	return menu.String()
-}
-
+// Main function and initialization
 func main() {
 	// Initialize signal handling
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
-	// Handle interrupt in a separate goroutine
 	go func() {
 		<-c
 		fmt.Println("\nReceived interrupt signal. Saving and exiting...")
@@ -192,715 +64,1249 @@ func main() {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 
-	// Load user profile
+	// Initialize app
+	app := NewApp(store)
+	app.Run()
+}
+
+func NewApp(store *storage.Storage) *App {
 	profile, err := store.LoadProfile()
 	if err != nil {
 		log.Fatalf("Failed to load profile: %v", err)
 	}
 
-	// Keep just this one call
-	debugProfile(profile)
-
-	// Load feeds
-	feeds, err := loadFeedsFromFile("feeds.txt")
+	feeds, err := store.LoadFeeds()
 	if err != nil {
-		fmt.Printf("Error loading feeds: %v\n", err)
+		log.Printf("Error loading feeds: %v", err)
 		feeds = []string{"https://lessnews.dev/rss.xml"}
 	}
 
-	// Parse feeds concurrently
-	var allItems []FeedItem
+	return &App{
+		store:   store,
+		profile: profile,
+		feeds:   feeds,
+	}
+}
+
+func (a *App) Run() {
+	// Initial feed refresh
+	a.refreshFeeds()
+
+	for {
+		a.showMainMenu()
+	}
+}
+
+func (a *App) showMainMenu() {
+	clearScreen()
+	fmt.Printf("%s v%s\n", ui.HeaderStyle.Render("RSS Reader"), Version)
+
+	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Commands:")
+	fmt.Println(ui.ArrowStyle.Render())
+	fmt.Printf("%s (s)earch       Search articles\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (r)ecommended  View recommended articles\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (i)nterests    Manage your interests\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (f)eeds        Manage RSS feeds\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s refre(x)h      Update all feeds\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (q)uit         Exit the application\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (h)elp         Show help\n", ui.ArrowStyle.Render())
+	fmt.Println()
+
+	fmt.Print(ui.CommandStyle.Render("→ "))
+
+	cmd := readLine()
+	a.handleCommand(cmd)
+}
+
+func (a *App) handleCommand(cmd string) {
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+
+	switch cmd {
+	case "h", "help":
+		a.showMainHelp()
+		return
+	case "s", "search":
+		a.searchArticles()
+		return
+	case "r", "recommended":
+		a.showRecommendations()
+		return
+	case "i", "interests":
+		a.manageInterests()
+		return
+	case "f", "feeds":
+		a.manageFeeds()
+		return
+	case "x", "refresh":
+		if !confirmAction("Are you sure you want to refresh all feeds? This may take a while.") {
+			fmt.Println(ui.DimStyle.Render("Operation cancelled"))
+			return
+		}
+		a.refreshFeeds()
+		return
+	case "q", "quit", "exit":
+		os.Exit(0)
+	default:
+		showError("Unknown command")
+		return
+	}
+}
+
+func (a *App) refreshFeeds() {
+	stop := showProgress("Updating feeds")
+	defer stop()
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	var items []models.FeedItem
 
-	for _, feedURL := range feeds {
+	for _, feedURL := range a.feeds {
 		wg.Add(1)
 		go func(url string) {
 			defer wg.Done()
-			items := parseFeed(url)
-
+			feed := parseFeed(url)
 			mu.Lock()
-			allItems = append(allItems, items...)
+			items = append(items, feed...)
 			mu.Unlock()
 		}(feedURL)
 	}
 	wg.Wait()
 
-	// Start the main program loop
-	searchFeeds(allItems, profile, store)
+	a.items = items
+	showSuccess("Feeds updated successfully")
 }
 
-func parseFeed(feedURL string) []FeedItem {
-	var items []FeedItem
+func (a *App) searchArticles() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Search Articles"))
+	fmt.Println()
 
-	// Validate feed URL format
-	if !strings.HasPrefix(feedURL, "http://") && !strings.HasPrefix(feedURL, "https://") {
-		fmt.Printf("Error: Invalid feed URL format %s (must start with http:// or https://)\n", feedURL)
-		return items
+	fmt.Print(ui.CommandStyle.Render("Enter search term (or 'b' to go back): "))
+	query := readLine()
+
+	if strings.ToLower(query) == "b" {
+		return
 	}
 
-	// Check if URL ends with common feed extensions
-	isValidFeed := strings.HasSuffix(feedURL, ".xml") ||
-		strings.HasSuffix(feedURL, ".rss") ||
-		strings.HasSuffix(feedURL, "/feed") ||
-		strings.HasSuffix(feedURL, "/rss") ||
-		strings.HasSuffix(feedURL, "/feed.xml") ||
-		strings.HasSuffix(feedURL, "/rss.xml")
-
-	if !isValidFeed && !strings.Contains(feedURL, "feed") && !strings.Contains(feedURL, "rss") {
-		fmt.Printf("Warning: URL %s might not be a valid RSS feed\n", feedURL)
+	if query == "" {
+		showError("Search term cannot be empty")
+		return
 	}
 
-	fp := gofeed.NewParser()
-	feed, err := fp.ParseURL(feedURL)
-	if err != nil {
-		fmt.Printf("Error parsing feed %s: %v\n", feedURL, err)
-		return items
+	stop := showProgress("Searching articles")
+	results := a.searchItems(query)
+	stop()
+
+	if len(results) == 0 {
+		showError("No articles found")
+		return
 	}
 
-	if len(feed.Items) == 0 {
-		fmt.Printf("Warning: Feed %s contains no items\n", feedURL)
-		return items
-	}
-
-	fmt.Printf("Successfully parsed feed: %s (%d items)\n", feed.Title, len(feed.Items))
-
-	for _, item := range feed.Items {
-		items = append(items, FeedItem{
-			Title:       item.Title,
-			Description: item.Description,
-			Link:        item.Link,
-			Published:   item.Published,
-			FeedSource:  feed.Title,
-		})
-	}
-
-	return items
+	a.showSearchResults(query, results)
 }
 
-func searchFeeds(items []FeedItem, profile *models.UserProfile, store *storage.Storage) {
-	reader := bufio.NewReader(os.Stdin)
+func (a *App) searchItems(query string) []models.FeedItem {
+	query = strings.ToLower(query)
+	var results []models.FeedItem
+
+	for _, item := range a.items {
+		if strings.Contains(strings.ToLower(item.Title), query) ||
+			strings.Contains(strings.ToLower(item.Description), query) {
+			results = append(results, item)
+		}
+	}
+
+	return results
+}
+
+func (a *App) showSearchResults(query string, results []models.FeedItem) {
+	currentPage := 0
+	itemsPerPage := 10
+	totalPages := (len(results) + itemsPerPage - 1) / itemsPerPage
+	selectedItem := 0
 
 	for {
 		clearScreen()
+		fmt.Printf("%s Search Results for \"%s\"\n", ui.HeaderStyle.Render("→"), query)
+		fmt.Printf("%s Found %d articles\n", ui.DimStyle.Render("→"), len(results))
+		fmt.Println()
 
-		searchUI := []string{
-			"📚 RSS Reader",
-			"───────────────",
-			"",
-			"1. 🔍 Search Articles",
-			"2. ⭐ View Recommended",
-			"3. 📋 View Interests",
-			"4. 📑 Manage Feeds",
-			"5. 🚪 Exit",
-			"",
-			"Enter your choice (1-5)",
+		// Display results for current page
+		start := currentPage * itemsPerPage
+		end := min(start+itemsPerPage, len(results))
+
+		for i, item := range results[start:end] {
+			cursor := ui.UnselectedStyle.Render()
+			if i == selectedItem {
+				cursor = ui.SelectedStyle.Render()
+			}
+			fmt.Printf("%s %s. %s\n",
+				cursor,
+				ui.DimStyle.Render(fmt.Sprintf("%d", start+i+1)),
+				ui.TitleStyle.Render(item.Title))
+			fmt.Printf("   %s - %s\n",
+				ui.SourceStyle.Render(item.FeedSource),
+				ui.DateStyle.Render(item.Published.Format("2006-01-02")))
+			fmt.Printf("   %s %s\n",
+				ui.DimStyle.Render("Link:"),
+				ui.LinkStyle.Render(item.Link))
+			fmt.Println()
 		}
 
-		fmt.Println(appStyle.Render(strings.Join(searchUI, "\n")))
-		fmt.Print(searchPromptStyle.Render("→ "))
+		// Show navigation help
+		fmt.Println()
+		fmt.Println(ui.DimStyle.Render("Navigation:"))
+		fmt.Printf("%s ↑/↓ or j/k    Navigate items\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s ←/→ or h/l    Change pages\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s Enter         View selected article\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s o             Open in browser\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s b             Back to main menu\n", ui.ArrowStyle.Render())
+		fmt.Println()
 
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
+		// Read key input
+		key, err := readKey()
+		if err != nil {
+			continue
+		}
 
-		switch choice {
-		case "1":
-			searchArticles(items, profile, store)
-		case "2":
-			showRecommendations(items, profile, store)
-		case "3":
-			showInterests(profile, store)
-		case "4":
-			manageFeeds(store)
-		case "5":
-			clearScreen()
-			fmt.Println(appStyle.Render("Thanks for using RSS Reader! 👋"))
+		// Handle 'o' followed by number
+		if key.key == 'o' {
+			var numStr string
+			fmt.Print("o") // Show the 'o' being typed
+
+			// Read subsequent digits
+			for {
+				k, err := readKey()
+				if err != nil {
+					break
+				}
+				// If Enter is pressed or non-digit/non-backspace, break
+				if k.key == 13 || (k.key != 127 && (k.key < '0' || k.key > '9')) {
+					break
+				}
+				// If backspace, remove last digit
+				if k.key == 127 && len(numStr) > 0 {
+					numStr = numStr[:len(numStr)-1]
+					fmt.Print("\b \b") // Erase character
+					continue
+				}
+				// Add digit and show it
+				numStr += string(k.char)
+				fmt.Print(string(k.char))
+			}
+			fmt.Println() // New line after input
+
+			// Process the number
+			if numStr != "" {
+				if num, err := strconv.Atoi(numStr); err == nil {
+					index := num - 1
+					if index >= 0 && index < len(results) {
+						if err := openInBrowser(results[index].Link); err != nil {
+							showError("Failed to open browser")
+						} else {
+							showSuccess(fmt.Sprintf("Opened article %d in browser", num))
+						}
+					} else {
+						showError(fmt.Sprintf("Invalid article number: %d", num))
+					}
+				}
+			}
+			continue
+		}
+
+		switch key.key {
+		case 'j', 66: // Down arrow
+			if selectedItem < min(itemsPerPage-1, end-start-1) {
+				selectedItem++
+			}
+		case 'k', 65: // Up arrow
+			if selectedItem > 0 {
+				selectedItem--
+			}
+		case 'l', 67: // Right arrow
+			if currentPage < totalPages-1 {
+				currentPage++
+				selectedItem = 0
+			}
+		case 68, 'h': // Left arrow or 'h' for left
+			if key.key == 'h' {
+				a.showSearchHelp()
+				continue
+			}
+			// Otherwise handle as left arrow
+			if currentPage > 0 {
+				currentPage--
+				selectedItem = 0
+			}
+		case 13: // Enter
+			itemIndex := start + selectedItem
+			if itemIndex < len(results) {
+				a.viewArticleSequence(results, itemIndex)
+			}
+		case 'b':
 			return
 		}
 	}
 }
 
+func (a *App) viewArticleSequence(items []models.FeedItem, startIndex int) {
+	for i := startIndex; i < len(items); i++ {
+		clearScreen()
+		fmt.Printf("%s Article %d of %d\n", ui.DimStyle.Render("→"), i+1, len(items))
+		fmt.Println()
+
+		continueViewing := a.displayArticle(items[i])
+		if !continueViewing {
+			return // Return to results view
+		}
+	}
+
+	// Show end of results message
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("End of Results"))
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return to results..."))
+	readLine()
+}
+
+func (a *App) showRecommendations() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Recommended Articles"))
+	fmt.Println()
+
+	if len(a.profile.Interests) == 0 {
+		showError("No interests set. Add some interests first!")
+		return
+	}
+
+	// Calculate recommendations
+	var recommendations []models.ArticleScore
+	for _, item := range a.items {
+		score := a.calculateInterestScore(item)
+		if score > 0 {
+			recommendations = append(recommendations, models.ArticleScore{
+				Item:  item,
+				Score: score,
+			})
+		}
+	}
+
+	if len(recommendations) == 0 {
+		showError("No recommendations found")
+		return
+	}
+
+	// Sort by score
+	sort.Slice(recommendations, func(i, j int) bool {
+		return recommendations[i].Score > recommendations[j].Score
+	})
+
+	// Show paginated recommendations
+	currentPage := 0
+	itemsPerPage := 10
+	selectedItem := 0
+
+	// Show sorting options
+	fmt.Printf("%s Sorting by: %s\n",
+		ui.ArrowStyle.Render(),
+		"Relevance")
+	fmt.Println()
+
+	for {
+		clearScreen()
+		fmt.Println(ui.HeaderStyle.Render("Recommended Articles"))
+		fmt.Printf("%s Found %d recommendations\n", ui.DimStyle.Render("→"), len(recommendations))
+		fmt.Println()
+
+		// Sort articles
+		sorted := a.sortRecommendations(recommendations, SortByScore)
+
+		// Calculate pagination
+		totalPages := (len(sorted) + itemsPerPage - 1) / itemsPerPage
+		start := currentPage * itemsPerPage
+		end := min(start+itemsPerPage, len(sorted))
+
+		// Show articles
+		for i, article := range sorted[start:end] {
+			cursor := ui.UnselectedStyle.Render()
+			if i == selectedItem {
+				cursor = ui.SelectedStyle.Render()
+			}
+			fmt.Printf("%s %s. %s\n",
+				cursor,
+				ui.DimStyle.Render(fmt.Sprintf("%d", start+i+1)),
+				ui.TitleStyle.Render(article.Item.Title))
+			fmt.Printf("   %s - %s\n",
+				ui.SourceStyle.Render(article.Item.FeedSource),
+				ui.DateStyle.Render(article.Item.Published.Format("2006-01-02")))
+			fmt.Printf("   %s %.2f\n",
+				ui.DimStyle.Render("Score:"),
+				ui.ScoreStyle.Render(fmt.Sprintf("%.2f", article.Score)))
+			fmt.Println()
+		}
+
+		// Show pagination info
+		fmt.Printf("%s Page %d of %d (%d articles)\n",
+			ui.ArrowStyle.Render(),
+			currentPage+1,
+			totalPages,
+			len(sorted))
+		fmt.Println()
+
+		// Show commands
+		fmt.Println(ui.ArrowStyle.Render() + "Commands:")
+		fmt.Printf("%s (n)ext/(p)rev    Navigate pages\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (s)ort           Toggle sort (relevance/date)\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (v)iew [number]  View article details\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (o)[number]      Open in browser\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (b)ack           Return to main menu\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (h)elp           Show help\n", ui.ArrowStyle.Render())
+		fmt.Println()
+
+		// Add keyboard navigation
+		key, err := readKey()
+		if err != nil {
+			continue
+		}
+
+		// Handle 'o' followed by number
+		if key.key == 'o' {
+			var numStr string
+			fmt.Print("o") // Show the 'o' being typed
+
+			// Read subsequent digits
+			for {
+				k, err := readKey()
+				if err != nil {
+					break
+				}
+				// If Enter is pressed or non-digit/non-backspace, break
+				if k.key == 13 || (k.key != 127 && (k.key < '0' || k.key > '9')) {
+					break
+				}
+				// If backspace, remove last digit
+				if k.key == 127 && len(numStr) > 0 {
+					numStr = numStr[:len(numStr)-1]
+					fmt.Print("\b \b") // Erase character
+					continue
+				}
+				// Add digit and show it
+				numStr += string(k.char)
+				fmt.Print(string(k.char))
+			}
+			fmt.Println() // New line after input
+
+			// Process the number
+			if numStr != "" {
+				if num, err := strconv.Atoi(numStr); err == nil {
+					index := num - 1
+					if index >= 0 && index < len(sorted) {
+						if err := openInBrowser(sorted[index].Item.Link); err != nil {
+							showError("Failed to open browser")
+						} else {
+							showSuccess(fmt.Sprintf("Opened article %d in browser", num))
+						}
+					} else {
+						showError(fmt.Sprintf("Invalid article number: %d", num))
+					}
+				}
+			}
+			continue
+		}
+
+		// Handle navigation similar to showSearchResults
+		switch key.key {
+		case 'j', 66: // Down arrow
+			if selectedItem < min(itemsPerPage-1, end-start-1) {
+				selectedItem++
+			}
+		case 'k', 65: // Up arrow
+			if selectedItem > 0 {
+				selectedItem--
+			}
+		case 'l', 67: // Right arrow, next page
+			if currentPage < totalPages-1 {
+				currentPage++
+				selectedItem = 0
+			}
+		case 68: // Left arrow
+			if currentPage > 0 {
+				currentPage--
+				selectedItem = 0
+			}
+		case 'h': // Help - separate case for help command
+			a.showRecommendationsHelp()
+			continue
+		case 'n': // Next page
+			if currentPage < totalPages-1 {
+				currentPage++
+				selectedItem = 0
+			} else {
+				showError("Already on last page")
+			}
+		case 'p': // Previous page
+			if currentPage > 0 {
+				currentPage--
+				selectedItem = 0
+			} else {
+				showError("Already on first page")
+			}
+		case 's': // Sort
+			if currentPage == 0 {
+				currentPage = totalPages - 1
+			} else {
+				currentPage = 0
+			}
+		case 'v': // View
+			itemIndex := start + selectedItem
+			if itemIndex < len(sorted) {
+				// Convert ArticleScore slice to FeedItem slice
+				items := make([]models.FeedItem, len(sorted))
+				for i, score := range sorted {
+					items[i] = score.Item
+				}
+				a.viewArticleSequence(items, itemIndex)
+			}
+		case 'b': // Back
+			return
+		case 13: // Enter
+			itemIndex := start + selectedItem
+			if itemIndex < len(sorted) {
+				// Convert ArticleScore slice to FeedItem slice
+				items := make([]models.FeedItem, len(sorted))
+				for i, score := range sorted {
+					items[i] = score.Item
+				}
+				a.viewArticleSequence(items, itemIndex)
+			}
+		}
+	}
+}
+
+// Add this helper function for sorting articles
+func (a *App) sortRecommendations(articles []models.ArticleScore, sortBy int) []models.ArticleScore {
+	sorted := make([]models.ArticleScore, len(articles))
+	copy(sorted, articles)
+
+	switch sortBy {
+	case SortByScore:
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Score > sorted[j].Score // Higher scores first
+		})
+	case SortByDate:
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Item.Published.After(sorted[j].Item.Published) // Newer first
+		})
+	}
+	return sorted
+}
+
+// Add a help function for recommendations
+func (a *App) showRecommendationsHelp() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Help - Recommendations"))
+	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println()
+	fmt.Printf("%s next (n)          Go to next page\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s prev (p)          Go to previous page\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s sort (s)          Toggle between relevance and date sorting\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s view (v) [num]    View article details\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s o[num]            Open article in browser\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Relevance sorting shows articles based on your interests\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Date sorting shows newest articles first\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Use numbers to quickly view specific articles\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	readLine()
+}
+
+func (a *App) calculateInterestScore(item models.FeedItem) float64 {
+	var score float64
+	text := strings.ToLower(item.Title + " " + item.Description)
+
+	for word, weight := range a.profile.Interests {
+		if strings.Contains(text, strings.ToLower(word)) {
+			score += weight
+		}
+	}
+
+	return score
+}
+
+func (a *App) manageInterests() {
+	for {
+		clearScreen()
+		fmt.Println(ui.HeaderStyle.Render("Manage Interests"))
+		fmt.Println()
+
+		if len(a.profile.Interests) == 0 {
+			fmt.Println(ui.DimStyle.Render("No interests set"))
+		} else {
+			for word, weight := range a.profile.Interests {
+				fmt.Printf("%s %s (%.2f)\n", ui.ArrowStyle.Render(), word, weight)
+			}
+		}
+
+		fmt.Println()
+		fmt.Println(ui.ArrowStyle.Render() + "Commands:")
+		fmt.Printf("%s (a)dd     Add new interest\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (r)emove  Remove interest\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (b)ack    Return to main menu\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (h)elp    Show help\n", ui.ArrowStyle.Render())
+		fmt.Println()
+
+		fmt.Print(ui.CommandStyle.Render("→ "))
+		cmd := readLine()
+
+		switch strings.ToLower(cmd) {
+		case "a", "add":
+			fmt.Print(ui.CommandStyle.Render("Enter interest: "))
+			interest := readLine()
+			if interest != "" {
+				a.profile.Interests[interest] = 1.0
+				if err := a.store.SaveProfile(a.profile); err != nil {
+					showError("Failed to save profile")
+				} else {
+					showSuccess("Interest added")
+				}
+			}
+		case "r", "remove":
+			if len(a.profile.Interests) == 0 {
+				showError("No interests to remove")
+				continue
+			}
+
+			fmt.Println()
+			fmt.Println(ui.ArrowStyle.Render() + "Current interests:")
+			interests := make([]string, 0, len(a.profile.Interests))
+			for interest := range a.profile.Interests {
+				interests = append(interests, interest)
+			}
+			sort.Strings(interests)
+
+			for i, interest := range interests {
+				weight := a.profile.Interests[interest]
+				fmt.Printf("%s %d. %s (weight: %.2f)\n", ui.ArrowStyle.Render(), i+1, interest, weight)
+			}
+
+			fmt.Println()
+			fmt.Print(ui.CommandStyle.Render("Enter interest number to remove: "))
+			input := readLine()
+
+			index, err := strconv.Atoi(input)
+			if err != nil || index < 1 || index > len(interests) {
+				showError("Invalid interest number")
+				continue
+			}
+
+			interest := interests[index-1]
+			if !confirmAction(fmt.Sprintf("Are you sure you want to remove '%s'?", interest)) {
+				fmt.Println(ui.DimStyle.Render("Operation cancelled"))
+				continue
+			}
+
+			// Remove the interest
+			delete(a.profile.Interests, interest)
+			if err := a.store.SaveProfile(a.profile); err != nil {
+				showError("Failed to save profile: " + err.Error())
+				continue
+			}
+
+			fmt.Println(ui.SuccessStyle.Render("Interest removed successfully"))
+			continue
+		case "b", "back":
+			return
+		case "h", "help":
+			a.showInterestsHelp()
+			continue
+		default:
+			showError("Unknown command")
+		}
+	}
+}
+
+func (a *App) manageFeeds() {
+	for {
+		clearScreen()
+		fmt.Println(ui.HeaderStyle.Render("Manage Feeds"))
+		fmt.Println()
+
+		for i, feed := range a.feeds {
+			fmt.Printf("%s %d. %s\n", ui.ArrowStyle.Render(), i+1, feed)
+		}
+
+		fmt.Println()
+		fmt.Println(ui.ArrowStyle.Render() + "Commands:")
+		fmt.Printf("%s (a)dd     Add new feed\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (r)emove  Remove feed\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (b)ack    Return to main menu\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (h)elp    Show help\n", ui.ArrowStyle.Render())
+		fmt.Println()
+
+		fmt.Print(ui.CommandStyle.Render("→ "))
+		cmd := readLine()
+
+		switch strings.ToLower(cmd) {
+		case "h", "help":
+			a.showFeedsHelp()
+			continue
+		case "a", "add":
+			fmt.Println()
+			fmt.Print(ui.CommandStyle.Render("Enter feed URL: "))
+			feedURL := strings.TrimSpace(readLine())
+
+			// Normalize and validate URL format
+			normalizedURL, err := normalizeURL(feedURL)
+			if err != nil {
+				showError(err.Error())
+				continue
+			}
+
+			// Check if feed already exists
+			for _, existingURL := range a.feeds {
+				if existingURL == normalizedURL {
+					showError("This feed is already in your list")
+					continue
+				}
+			}
+
+			// Show validation progress
+			fmt.Print(ui.DimStyle.Render("Validating feed... "))
+
+			// Validate feed content
+			if err := a.validateFeed(normalizedURL); err != nil {
+				fmt.Println(ui.ErrorStyle.Render("Failed"))
+				showError(err.Error())
+				continue
+			}
+			fmt.Println(ui.SuccessStyle.Render("OK"))
+
+			// Confirm adding the feed
+			if !confirmAction(fmt.Sprintf("Add %s to your list?", normalizedURL)) {
+				fmt.Println(ui.DimStyle.Render("Operation cancelled"))
+				continue
+			}
+
+			// Add the feed
+			a.feeds = append(a.feeds, normalizedURL)
+			if err := a.store.SaveFeeds(a.feeds); err != nil {
+				showError("Failed to save feeds: " + err.Error())
+				continue
+			}
+
+			fmt.Println(ui.SuccessStyle.Render("Feed added successfully"))
+
+			// Offer to refresh feeds
+			if confirmAction("Would you like to refresh feeds now to fetch articles?") {
+				a.refreshFeeds()
+			}
+			continue
+		case "r", "remove":
+			if len(a.feeds) == 0 {
+				showError("No feeds to remove")
+				continue
+			}
+
+			fmt.Println()
+			fmt.Println(ui.ArrowStyle.Render() + "Current feeds:")
+			for i, feed := range a.feeds {
+				fmt.Printf("%s %d. %s\n", ui.ArrowStyle.Render(), i+1, feed)
+			}
+
+			fmt.Println()
+			fmt.Print(ui.CommandStyle.Render("Enter feed number to remove: "))
+			input := readLine()
+
+			index, err := strconv.Atoi(input)
+			if err != nil || index < 1 || index > len(a.feeds) {
+				showError("Invalid feed number")
+				continue
+			}
+
+			feedURL := a.feeds[index-1]
+			if !confirmAction(fmt.Sprintf("Are you sure you want to remove '%s'?", feedURL)) {
+				fmt.Println(ui.DimStyle.Render("Operation cancelled"))
+				continue
+			}
+
+			// Remove the feed
+			a.feeds = append(a.feeds[:index-1], a.feeds[index:]...)
+			if err := a.store.SaveFeeds(a.feeds); err != nil {
+				showError("Failed to save feeds: " + err.Error())
+				continue
+			}
+
+			fmt.Println(ui.SuccessStyle.Render("Feed removed successfully"))
+			continue
+		case "b", "back":
+			return
+		default:
+			showError("Unknown command")
+		}
+	}
+}
+
+func (a *App) displayResults(items []models.FeedItem) {
+	for i, item := range items {
+		clearScreen()
+		fmt.Printf("%s Article %d of %d\n", ui.DimStyle.Render("→"), i+1, len(items))
+		fmt.Println()
+
+		continueViewing := a.displayArticle(item)
+		if !continueViewing {
+			return // Only return to main menu if user chooses 'back'
+		}
+	}
+
+	// Show end of results message
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("End of Results"))
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return to main menu..."))
+	readLine()
+}
+
+func (a *App) displayArticle(item models.FeedItem) bool {
+	clearScreen()
+	fmt.Println(ui.TitleStyle.Render(item.Title))
+	fmt.Printf("%s %s\n",
+		ui.DimStyle.Render("Source:"),
+		ui.SourceStyle.Render(item.FeedSource))
+	fmt.Printf("%s %s\n",
+		ui.DimStyle.Render("Published:"),
+		ui.DateStyle.Render(item.Published.Format("2006-01-02")))
+	fmt.Println()
+	fmt.Println(wordWrap(item.Description, 80))
+	fmt.Println()
+	fmt.Printf("%s %s\n",
+		ui.DimStyle.Render("Link:"),
+		ui.LinkStyle.Render(item.Link))
+	fmt.Println()
+
+	// Show commands with enhanced styling
+	fmt.Println(ui.SectionStyle.Render("Commands:"))
+	fmt.Printf("%s %s Mark as interesting and continue\n",
+		ui.KeyStyle.Render("(y)es"),
+		ui.DimStyle.Render("→"))
+	fmt.Printf("%s (n)o      Skip to next article\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (b)ack    Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (o)pen    Open in browser\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (h)elp    Show help\n", ui.ArrowStyle.Render())
+	fmt.Println()
+
+	// Show tips
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Marking articles as interesting improves recommendations\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Use 'o' to read full article in your browser\n", ui.ArrowStyle.Render())
+	fmt.Println()
+
+	// Read and handle command
+	fmt.Print(ui.CommandStyle.Render("→ "))
+	cmd := readLine()
+
+	switch strings.ToLower(cmd) {
+	case "y", "yes":
+		// Handle marking as interesting
+		return true
+	case "n", "no":
+		return true
+	case "b", "back":
+		return false
+	case "o", "open":
+		if err := openInBrowser(item.Link); err != nil {
+			showError("Failed to open browser")
+		}
+		return true
+	case "h", "help":
+		return a.showArticleHelp()
+	default:
+		showError("Unknown command")
+		return true
+	}
+}
+
+func (a *App) showInterestsHelp() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Help - Manage Interests"))
+	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println()
+	fmt.Printf("%s add (a)           Add a new interest\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s remove (r)        Remove an existing interest\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Interests help find articles you'll like\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Interest weights increase as you mark articles\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Higher weights mean stronger recommendations\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	readLine()
+	return
+}
+
+func (a *App) showFeedsHelp() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Help - Manage Feeds"))
+	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println()
+	fmt.Printf("%s add (a)           Add a new RSS feed\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s remove (r)        Remove an existing feed\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Enter the full URL of the RSS feed\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Feeds are automatically updated on startup\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Use refresh (x) in main menu to update manually\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	readLine()
+	return
+}
+
+// Helper functions
 func clearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
 
-func showSpinner(message string, duration time.Duration) {
-	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	startTime := time.Now()
-
-	for time.Since(startTime) < duration {
-		for _, frame := range spinner {
-			fmt.Printf("\r%s %s", spinnerStyle.Render(frame), message)
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	fmt.Println()
-}
-
-func searchArticles(items []FeedItem, profile *models.UserProfile, store *storage.Storage) {
-	for {
-		clearScreen()
-
-		// Show search interface
-		searchUI := []string{
-			"🔍 RSS Search",
-			"───────────────",
-			"",
-			"Enter search term or commands:",
-			"  • Type your search terms",
-			"  • Use 'exit' to return to main menu",
-			"",
-		}
-
-		fmt.Println(appStyle.Render(strings.Join(searchUI, "\n")))
-
-		// Get search input
-		fmt.Print(searchPromptStyle.Render("→ "))
-		reader := bufio.NewReader(os.Stdin)
-		input, _ := reader.ReadString('\n')
-		searchTerm := strings.TrimSpace(input)
-
-		if searchTerm == "exit" {
-			return
-		}
-
-		if searchTerm == "" {
-			continue
-		}
-
-		// Show searching animation
-		showSpinner("Searching articles...", 800*time.Millisecond)
-
-		// Perform search
-		var results []FeedItem
-		for _, item := range items {
-			itemText := strings.ToLower(item.Title + " " + item.Description)
-			searchText := strings.ToLower(searchTerm)
-
-			if strings.Contains(itemText, searchText) {
-				results = append(results, item)
-			}
-		}
-
-		// Clear screen for results
-		clearScreen()
-
-		// Show results header
-		fmt.Println(appStyle.Render(fmt.Sprintf(
-			"Search Results for: %s\nFound %d articles\n",
-			searchPromptStyle.Render(searchTerm),
-			len(results))))
-
-		if len(results) == 0 {
-			fmt.Println(infoStyle.Render("No matching articles found."))
-			fmt.Println("\nPress Enter to search again...")
-			reader.ReadString('\n')
-			continue
-		}
-
-		// Display results
-		displayResults(results, profile, store)
-
-		// Show options
-		fmt.Println(appStyle.Render("\nOptions:"))
-		fmt.Println("• Enter article number to mark as interesting")
-		fmt.Println("• Press Enter to search again")
-		fmt.Println("• Type 'exit' to return to main menu")
-		fmt.Print(searchPromptStyle.Render("\n→ "))
-
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
-
-		if choice == "exit" {
-			return
-		}
-
-		// Handle article selection
-		if num, err := strconv.Atoi(choice); err == nil && num > 0 && num <= len(results) {
-			selected := results[num-1]
-			profile.UpdateInterests(selected.Title + " " + selected.Description)
-			profile.ReadArticles[selected.Link] = true
-
-			// Show confirmation
-			fmt.Println(infoStyle.Render("\n✨ Added to your interests!"))
-			showSpinner("Updating recommendations...", 500*time.Millisecond)
-		}
-	}
-}
-
-func showRecommendations(items []FeedItem, profile *models.UserProfile, store *storage.Storage) {
-	fmt.Println(titleStyle.Render("\n🎯 Recommended Articles"))
-	fmt.Println(dividerStyle.Render())
-
-	// Score all items based on user interests
-	var scored []ArticleScore
-
-	for _, item := range items {
-		if profile.ReadArticles[item.Link] {
-			continue // Skip already read articles
-		}
-
-		score := 0.0
-		text := item.Title + " " + item.Description
-		words := extractKeywords(text)
-
-		for _, word := range words {
-			if weight, exists := profile.Interests[word]; exists {
-				score += weight
-			}
-		}
-
-		if score > 0 {
-			scored = append(scored, ArticleScore{item, score})
-		}
-	}
-
-	// Sort by score
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].Score > scored[j].Score
-	})
-
-	if len(scored) == 0 {
-		fmt.Println(errorStyle.Render("No recommendations yet! Try marking some articles as interesting."))
-		fmt.Print(promptStyle.Render("\nPress Enter to continue..."))
-		bufio.NewReader(os.Stdin).ReadString('\n')
-		return
-	}
-
-	// Display top recommendations
-	for i, article := range scored {
-		if i >= 10 {
-			break
-		}
-		fmt.Printf("\n%s #%d (Score: %.2f)\n",
-			subtitleStyle.Render("Recommendation"),
-			i+1,
-			article.Score)
-		if !displayArticle(article.Item, profile, store) {
-			return // Exit if user wants to go back
-		}
-	}
-}
-
-func showInterests(profile *models.UserProfile, store *storage.Storage) {
-	for {
-		clearScreen()
-
-		header := []string{
-			"📋 Interest Management",
-			"───────────────",
-			"",
-			"Your current interests:",
-			"",
-		}
-
-		fmt.Println(appStyle.Render(strings.Join(header, "\n")))
-
-		// Display current interests
-		var sorted []weightedWord
-		for word, weight := range profile.Interests {
-			sorted = append(sorted, weightedWord{word, weight})
-		}
-
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].weight > sorted[j].weight
-		})
-
-		if len(sorted) == 0 {
-			fmt.Println(infoStyle.Render("No interests yet. Try marking some articles as interesting!"))
-		} else {
-			for i, ww := range sorted {
-				fmt.Printf("%d. %s %s\n",
-					i+1,
-					titleStyle.Render(ww.word),
-					infoStyle.Render(fmt.Sprintf("(%.2f)", ww.weight)))
-			}
-		}
-
-		options := []string{
-			"",
-			"Options:",
-			"  [a] Add new interest",
-			"  [r] Remove interest",
-			"  [m] Modify weight",
-			"  [c] Clear all interests",
-			"  [s] Save changes",
-			"  [x] Return to main menu",
-			"",
-			"Enter option [a/r/m/c/s/x]:",
-		}
-
-		fmt.Println(appStyle.Render(strings.Join(options, "\n")))
-		fmt.Print(searchPromptStyle.Render("→ "))
-
-		reader := bufio.NewReader(os.Stdin)
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(strings.ToLower(choice))
-
-		switch choice {
-		case "a":
-			addInterest(profile, store, reader)
-		case "r":
-			removeInterest(profile, store, reader, sorted)
-		case "m":
-			modifyInterest(profile, store, reader, sorted)
-		case "c":
-			clearInterests(profile, store, reader)
-		case "s":
-			saveChanges(profile, store)
-		case "x", "q":
-			saveChanges(profile, store)
-			return
-		default:
-			fmt.Println(errorStyle.Render("\nInvalid option. Please try again."))
-			time.Sleep(1 * time.Second)
-		}
-	}
-}
-
-// Helper functions to break down the functionality
-func addInterest(profile *models.UserProfile, store *storage.Storage, reader *bufio.Reader) {
-	fmt.Print(promptStyle.Render("\nEnter new interest keyword: "))
-	keyword, _ := reader.ReadString('\n')
-	keyword = strings.TrimSpace(strings.ToLower(keyword))
-
-	if keyword == "" {
-		fmt.Println(errorStyle.Render("\nInterest cannot be empty!"))
-		time.Sleep(1 * time.Second)
-		return
-	}
-
-	fmt.Print(promptStyle.Render("Enter weight (0.1-5.0): "))
-	weightStr, _ := reader.ReadString('\n')
-	weight, err := strconv.ParseFloat(strings.TrimSpace(weightStr), 64)
+// Add this function to read a single keypress
+func readKey() (keyPress, error) {
+	// Put terminal into raw mode
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		fmt.Println(errorStyle.Render("\nInvalid weight value!"))
-		time.Sleep(1 * time.Second)
-		return
+		return keyPress{}, err
 	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	weight = math.Max(0.1, math.Min(5.0, weight))
-	profile.Interests[keyword] = weight
-
-	if err := store.SaveProfile(profile); err != nil {
-		fmt.Printf("Error saving profile: %v\n", err)
-	} else {
-		showSpinner("Adding interest...", 500*time.Millisecond)
-		fmt.Println(infoStyle.Render("\n✨ Interest added and saved!"))
-	}
-	time.Sleep(1 * time.Second)
-}
-
-func removeInterest(profile *models.UserProfile, store *storage.Storage, reader *bufio.Reader, sorted []weightedWord) {
-	if len(sorted) == 0 {
-		fmt.Println(errorStyle.Render("\nNo interests to remove!"))
-		time.Sleep(1 * time.Second)
-		return
-	}
-
-	fmt.Print(promptStyle.Render("\nEnter number to remove (or 'c' to cancel): "))
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	if input == "c" {
-		return
-	}
-
-	num, err := strconv.Atoi(input)
-	if err != nil || num < 1 || num > len(sorted) {
-		fmt.Println(errorStyle.Render("\nInvalid selection!"))
-		time.Sleep(1 * time.Second)
-		return
-	}
-
-	word := sorted[num-1].word
-	delete(profile.Interests, word)
-
-	if err := store.SaveProfile(profile); err != nil {
-		fmt.Printf("Error saving profile: %v\n", err)
-	} else {
-		showSpinner("Removing interest...", 500*time.Millisecond)
-		fmt.Println(infoStyle.Render("\n✨ Interest removed and saved!"))
-	}
-	time.Sleep(1 * time.Second)
-}
-
-func saveChanges(profile *models.UserProfile, store *storage.Storage) {
-	if err := store.SaveProfile(profile); err != nil {
-		fmt.Printf("Error saving profile: %v\n", err)
-		fmt.Println(errorStyle.Render("\nFailed to save changes!"))
-	} else {
-		showSpinner("Saving changes...", 500*time.Millisecond)
-		fmt.Println(infoStyle.Render("\n✨ Changes saved successfully!"))
-	}
-	time.Sleep(1 * time.Second)
-}
-
-func clearInterests(profile *models.UserProfile, store *storage.Storage, reader *bufio.Reader) {
-	fmt.Print(promptStyle.Render("\nAre you sure you want to clear all interests? (y/n): "))
-	confirm, _ := reader.ReadString('\n')
-	if strings.TrimSpace(strings.ToLower(confirm)) == "y" {
-		profile.Interests = make(map[string]float64)
-
-		// Save after clearing interests
-		if err := store.SaveProfile(profile); err != nil {
-			fmt.Printf("Error saving profile: %v\n", err)
-		} else {
-			showSpinner("Clearing interests...", 500*time.Millisecond)
-			fmt.Println(infoStyle.Render("\n✨ All interests cleared and saved!"))
-		}
-		time.Sleep(1 * time.Second)
-	}
-}
-
-func modifyInterest(profile *models.UserProfile, store *storage.Storage, reader *bufio.Reader, sorted []weightedWord) {
-	if len(sorted) == 0 {
-		fmt.Println(errorStyle.Render("\nNo interests to modify!"))
-		time.Sleep(1 * time.Second)
-		return
-	}
-
-	fmt.Print(promptStyle.Render("\nEnter number to modify: "))
-	numStr, _ := reader.ReadString('\n')
-	if num, err := strconv.Atoi(strings.TrimSpace(numStr)); err == nil && num > 0 && num <= len(sorted) {
-		word := sorted[num-1].word
-		fmt.Print(promptStyle.Render("Enter new weight (0.1-5.0): "))
-		weightStr, _ := reader.ReadString('\n')
-		if weight, err := strconv.ParseFloat(strings.TrimSpace(weightStr), 64); err == nil {
-			weight = math.Max(0.1, math.Min(5.0, weight))
-			profile.Interests[word] = weight
-			showSpinner("Updating weight...", 500*time.Millisecond)
-			fmt.Println(infoStyle.Render("\n✨ Weight updated!"))
-			time.Sleep(1 * time.Second)
-		}
-	}
-}
-
-func displayResults(items []FeedItem, profile *models.UserProfile, store *storage.Storage) {
-	for _, item := range items {
-		if !displayArticle(item, profile, store) {
-			return // Exit the loop if user wants to go back
-		}
-	}
-}
-
-func displayArticle(item FeedItem, profile *models.UserProfile, store *storage.Storage) bool {
-	fmt.Println(dividerStyle.Render())
-
-	fmt.Printf("%s %s\n",
-		subtitleStyle.Render("📰 Source:"),
-		textStyle.Render(item.FeedSource))
-
-	fmt.Printf("%s %s\n",
-		subtitleStyle.Render("📌 Title:"),
-		titleStyle.Render(item.Title))
-
-	fmt.Printf("%s %s\n",
-		subtitleStyle.Render("🕒 Published:"),
-		textStyle.Render(item.Published))
-
-	fmt.Printf("%s %s\n",
-		subtitleStyle.Render("🔗 Link:"),
-		linkStyle.Render(item.Link))
-
-	fmt.Printf("%s %s\n",
-		subtitleStyle.Render("📝 Description:"),
-		textStyle.Render(item.Description))
-
-	fmt.Println(dividerStyle.Render())
-
-	fmt.Println(infoStyle.Render("\nOptions:"))
-	fmt.Println(shortcutStyle.Render("  [y] Yes, mark as interesting"))
-	fmt.Println(shortcutStyle.Render("  [n] No, skip this article"))
-	fmt.Println(shortcutStyle.Render("  [b] Go back to list"))
-	fmt.Print(promptStyle.Render("\nWhat would you like to do? [y/n/b]: "))
-
-	reader := bufio.NewReader(os.Stdin)
-	response, _ := reader.ReadString('\n')
-	response = strings.ToLower(strings.TrimSpace(response))
-
-	switch response {
-	case "y":
-		profile.UpdateInterests(item.Title + " " + item.Description)
-		profile.ReadArticles[item.Link] = true
-
-		if err := store.SaveProfile(profile); err != nil {
-			fmt.Printf("Error saving profile: %v\n", err)
-		} else {
-			showSpinner("Updating interests...", 500*time.Millisecond)
-			fmt.Println(titleStyle.Render("✨ Added to your interests!"))
-			time.Sleep(1 * time.Second)
-		}
-		return true
-	case "b":
-		return false // Signal that we want to go back
-	case "n":
-		return true // Continue to next article
-	default:
-		fmt.Println(errorStyle.Render("\nInvalid option. Skipping article."))
-		time.Sleep(1 * time.Second)
-		return true
-	}
-}
-
-func loadFeedsFromFile(filename string) ([]string, error) {
-	var feeds []string
-	var invalidFeeds []string
-
-	file, err := os.Open(filename)
+	var buf [3]byte
+	n, err := os.Stdin.Read(buf[:])
 	if err != nil {
-		return nil, err
+		return keyPress{}, err
 	}
-	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		url := strings.TrimSpace(scanner.Text())
+	// Handle arrow keys and special keys
+	if buf[0] == 27 && n == 3 {
+		switch buf[2] {
+		case 65: // Up arrow
+			return keyPress{key: 'k'}, nil
+		case 66: // Down arrow
+			return keyPress{key: 'j'}, nil
+		case 67: // Right arrow
+			return keyPress{key: 'l'}, nil
+		case 68: // Left arrow
+			return keyPress{key: 'h'}, nil
+		}
+	}
 
-		// Skip empty lines and comments
-		if url == "" || strings.HasPrefix(url, "#") {
+	// Handle regular keys
+	if n == 1 {
+		return keyPress{key: buf[0], char: rune(buf[0])}, nil
+	}
+
+	return keyPress{}, nil
+}
+
+// Update the readLine function to handle arrow keys
+func readLine() string {
+	var line string
+	for {
+		key, err := readKey()
+		if err != nil {
+			return line
+		}
+
+		// Handle Enter key
+		if key.key == 13 {
+			fmt.Println() // New line after input
+			return line
+		}
+
+		// Handle backspace
+		if key.key == 127 && len(line) > 0 {
+			line = line[:len(line)-1]
+			fmt.Print("\b \b") // Erase character
 			continue
 		}
 
-		// Basic URL validation
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-			invalidFeeds = append(invalidFeeds, fmt.Sprintf("Line %d: %s (invalid URL format)", lineNum, url))
-			continue
+		// Handle printable characters
+		if key.key >= 32 && key.key <= 126 {
+			line += string(key.char)
+			fmt.Print(string(key.char))
 		}
-
-		feeds = append(feeds, url)
 	}
+}
 
-	// Report any invalid feeds found
-	if len(invalidFeeds) > 0 {
-		fmt.Println("\nWarning: Found invalid feeds in configuration:")
-		for _, invalid := range invalidFeeds {
-			fmt.Printf("- %s\n", invalid)
+func showSuccess(msg string) {
+	fmt.Printf("%s %s\n",
+		ui.SuccessStyle.Render("✓"),
+		msg)
+	time.Sleep(1 * time.Second)
+}
+
+func showError(msg string) {
+	fmt.Printf("%s %s\n",
+		ui.ErrorStyle.Render("✗"),
+		msg)
+	time.Sleep(1 * time.Second)
+}
+
+func showProgress(msg string) func() {
+	done := make(chan bool)
+	go func() {
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		i := 0
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				fmt.Printf("\r%s %s",
+					ui.CommandStyle.Render(frames[i]),
+					msg)
+				i = (i + 1) % len(frames)
+				time.Sleep(80 * time.Millisecond)
+			}
 		}
+	}()
+	return func() {
+		done <- true
 		fmt.Println()
 	}
-
-	return feeds, scanner.Err()
 }
 
-func extractKeywords(text string) []string {
-	// Convert to lowercase and split into words
-	words := strings.Fields(strings.ToLower(text))
+func openInBrowser(url string) error {
+	var cmd string
+	var args []string
 
-	// Filter out common words and short terms
-	keywords := make([]string, 0)
-	for _, word := range words {
-		if len(word) > 3 && !isCommonWord(word) {
-			keywords = append(keywords, word)
+	switch runtime.GOOS {
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start"}
+	case "darwin":
+		cmd = "open"
+	default: // "linux", "freebsd", "openbsd", "netbsd"
+		cmd = "xdg-open"
+	}
+	args = append(args, url)
+	return exec.Command(cmd, args...).Start()
+}
+
+func wordWrap(text string, width int) string {
+	words := strings.Fields(strings.TrimSpace(text))
+	if len(words) == 0 {
+		return ""
+	}
+
+	var lines []string
+	currentLine := words[0]
+
+	for _, word := range words[1:] {
+		if len(currentLine)+1+len(word) <= width {
+			currentLine += " " + word
+		} else {
+			lines = append(lines, currentLine)
+			currentLine = word
 		}
 	}
+	lines = append(lines, currentLine)
 
-	return keywords
+	return strings.Join(lines, "\n")
 }
 
-func isCommonWord(word string) bool {
-	commonWords := map[string]bool{
-		"the": true, "and": true, "for": true, "that": true, "with": true,
-		"this": true, "from": true, "your": true, "have": true, "are": true,
-		// Add more common words as needed
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	return commonWords[word]
+	return b
 }
 
-func advancedSearch(items []FeedItem, term string, options SearchOptions) []FeedItem {
-	// Implementation of advanced search logic based on the term and options
-	// This is a placeholder and should be replaced with the actual implementation
+func parseFeed(url string) []models.FeedItem {
+	fp := gofeed.NewParser()
+	feed, err := fp.ParseURL(url)
+	if err != nil {
+		return nil
+	}
+
+	var items []models.FeedItem
+	for _, item := range feed.Items {
+		// Parse the published date
+		published := time.Now() // default to current time
+		if item.Published != "" {
+			if t, err := parseDate(item.Published); err == nil {
+				published = t
+			}
+		}
+
+		items = append(items, models.FeedItem{
+			Title:       item.Title,
+			Description: item.Description,
+			Link:        item.Link,
+			Published:   published,
+			FeedSource:  feed.Title,
+		})
+	}
 	return items
 }
 
-func debugProfile(profile *models.UserProfile) {
-	fmt.Println("\nDebug: Current Profile State")
-	fmt.Printf("Number of interests: %d\n", len(profile.Interests))
-	fmt.Printf("Number of read articles: %d\n", len(profile.ReadArticles))
-	fmt.Printf("Last updated: %v\n", profile.LastUpdated)
-
-	if len(profile.Interests) > 0 {
-		fmt.Println("\nInterests:")
-		for word, weight := range profile.Interests {
-			fmt.Printf("- %s: %.2f\n", word, weight)
-		}
-	}
+func (a *App) showMainHelp() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Help - Main Menu"))
 	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println()
+	fmt.Printf("%s search (s)       Search through all articles\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s recommended (r)   View articles based on your interests\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s interests (i)     Add or remove topics you're interested in\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s feeds (f)         Manage your RSS feed subscriptions\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s refresh (x)       Update all feeds to get latest articles\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s quit (q)          Exit the application\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Use single-letter commands for faster navigation\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Your interests affect article recommendations\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s All changes are automatically saved\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	readLine()
 }
 
-func manageFeeds(store *storage.Storage) {
-	for {
-		clearScreen()
+func (a *App) showSearchHelp() {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Help - Search Results"))
+	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println()
+	fmt.Printf("%s next (n)          Go to next page\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s prev (p)          Go to previous page\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s view (v)          View article details\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Use single-letter commands for faster navigation\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Your interests affect article recommendations\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	readLine()
+	return
+}
 
-		feeds, err := store.LoadFeeds()
-		if err != nil {
-			fmt.Printf("Error loading feeds: %v\n", err)
-			return
-		}
+func (a *App) showArticleHelp() bool {
+	clearScreen()
+	fmt.Println(ui.HeaderStyle.Render("Help - Article View"))
+	fmt.Println()
+	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println()
+	fmt.Printf("%s yes (y)           Mark as interesting and continue\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s no (n)            Skip to next article\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s open (o)          Open in browser\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Tips:"))
+	fmt.Printf("%s Marking articles as interesting improves recommendations\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Use 'o' to read full article in your browser\n", ui.ArrowStyle.Render())
+	fmt.Println()
+	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	readLine()
+	return true
+}
 
-		header := []string{
-			"📑 Feed Management",
-			"───────────────",
-			"",
-			"Current feeds:",
-			"",
-		}
+// Add this helper function for confirmations
+func confirmAction(prompt string) bool {
+	fmt.Println()
+	fmt.Printf("%s %s (y/n): ", ui.ArrowStyle.Render(), prompt)
+	response := strings.ToLower(strings.TrimSpace(readLine()))
+	return response == "y" || response == "yes"
+}
 
-		fmt.Println(appStyle.Render(strings.Join(header, "\n")))
+// Add these helper functions for feed validation
+func normalizeURL(urlStr string) (string, error) {
+	// If no scheme is provided, prepend https://
+	if !strings.Contains(urlStr, "://") {
+		urlStr = "https://" + urlStr
+	}
 
-		for i, feed := range feeds {
-			fmt.Printf("%d. %s\n", i+1, feed)
-		}
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL format: %v", err)
+	}
 
-		options := []string{
-			"",
-			"Options:",
-			"  [a] Add new feed",
-			"  [r] Remove feed",
-			"  [x] Return to main menu",
-			"",
-			"Enter option [a/r/x]:",
-		}
+	// Ensure scheme is http or https
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("URL must use http or https protocol")
+	}
 
-		fmt.Println(appStyle.Render(strings.Join(options, "\n")))
-		fmt.Print(searchPromptStyle.Render("→ "))
+	return u.String(), nil
+}
 
-		reader := bufio.NewReader(os.Stdin)
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(strings.ToLower(choice))
+func (a *App) validateFeed(feedURL string) error {
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 
-		switch choice {
-		case "a":
-			fmt.Print(promptStyle.Render("\nEnter feed URL: "))
-			url, _ := reader.ReadString('\n')
-			url = strings.TrimSpace(url)
-			if url != "" {
-				feeds = append(feeds, url)
-				if err := store.SaveFeeds(feeds); err != nil {
-					fmt.Printf("Error saving feeds: %v\n", err)
-				} else {
-					fmt.Println(infoStyle.Render("\n✨ Feed added successfully!"))
-				}
-				time.Sleep(1 * time.Second)
-			}
+	// Try to fetch the feed
+	resp, err := client.Get(feedURL)
+	if err != nil {
+		return fmt.Errorf("could not connect to feed: %v", err)
+	}
+	defer resp.Body.Close()
 
-		case "r":
-			fmt.Print(promptStyle.Render("\nEnter number to remove: "))
-			numStr, _ := reader.ReadString('\n')
-			if num, err := strconv.Atoi(strings.TrimSpace(numStr)); err == nil && num > 0 && num <= len(feeds) {
-				feeds = append(feeds[:num-1], feeds[num:]...)
-				if err := store.SaveFeeds(feeds); err != nil {
-					fmt.Printf("Error saving feeds: %v\n", err)
-				} else {
-					fmt.Println(infoStyle.Render("\n✨ Feed removed successfully!"))
-				}
-				time.Sleep(1 * time.Second)
-			}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("feed returned status code %d", resp.StatusCode)
+	}
 
-		case "x":
-			return
+	// Read the body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("could not read feed content: %v", err)
+	}
+
+	// Try to parse as RSS
+	var rss struct {
+		XMLName xml.Name `xml:"rss"`
+	}
+	if xml.Unmarshal(body, &rss) == nil {
+		return nil
+	}
+
+	// Try to parse as Atom
+	var atom struct {
+		XMLName xml.Name `xml:"feed"`
+	}
+	if xml.Unmarshal(body, &atom) == nil {
+		return nil
+	}
+
+	return fmt.Errorf("URL does not appear to be a valid RSS or Atom feed")
+}
+
+// Add this helper function to parse dates
+func parseDate(dateStr string) (time.Time, error) {
+	// Try common date formats
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t, nil
 		}
 	}
+
+	// Return current time and error if parsing fails
+	return time.Now(), fmt.Errorf("could not parse date: %s", dateStr)
 }
