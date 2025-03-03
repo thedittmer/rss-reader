@@ -529,6 +529,8 @@ func (a *App) showRecommendations() {
 			if currentPage < totalPages-1 {
 				currentPage++
 				selectedItem = 0
+			} else {
+				showError("Already on last page")
 			}
 		case 68: // Left arrow
 			if currentPage > 0 {
@@ -656,6 +658,7 @@ func (a *App) manageInterests() {
 		fmt.Println()
 		fmt.Println(ui.ArrowStyle.Render() + "Commands:")
 		fmt.Printf("%s (a)dd     Add new interest\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (s)core   Set interest weight\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (r)emove  Remove interest\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (b)ack    Return to main menu\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (h)elp    Show help\n", ui.ArrowStyle.Render())
@@ -669,13 +672,66 @@ func (a *App) manageInterests() {
 			fmt.Print(ui.CommandStyle.Render("Enter interest: "))
 			interest := readLine()
 			if interest != "" {
-				a.profile.Interests[interest] = 1.0
+				fmt.Print(ui.CommandStyle.Render("Enter weight (0.1-10.0): "))
+				weightStr := readLine()
+				weight, err := strconv.ParseFloat(weightStr, 64)
+				if err != nil || weight < 0.1 || weight > 10.0 {
+					showError("Invalid weight. Using default weight of 1.0")
+					weight = 1.0
+				}
+				a.profile.Interests[interest] = weight
 				if err := a.store.SaveProfile(a.profile); err != nil {
 					showError("Failed to save profile")
 				} else {
 					showSuccess("Interest added")
 				}
 			}
+		case "s", "score":
+			if len(a.profile.Interests) == 0 {
+				showError("No interests to score")
+				continue
+			}
+
+			fmt.Println()
+			fmt.Println(ui.ArrowStyle.Render() + "Current interests:")
+			interests := make([]string, 0, len(a.profile.Interests))
+			for interest := range a.profile.Interests {
+				interests = append(interests, interest)
+			}
+			sort.Strings(interests)
+
+			for i, interest := range interests {
+				weight := a.profile.Interests[interest]
+				fmt.Printf("%s %d. %s (weight: %.2f)\n", ui.ArrowStyle.Render(), i+1, interest, weight)
+			}
+
+			fmt.Println()
+			fmt.Print(ui.CommandStyle.Render("Enter interest number to score: "))
+			input := readLine()
+
+			index, err := strconv.Atoi(input)
+			if err != nil || index < 1 || index > len(interests) {
+				showError("Invalid interest number")
+				continue
+			}
+
+			interest := interests[index-1]
+			fmt.Printf(ui.CommandStyle.Render("Enter new weight for '%s' (0.1-10.0): "), interest)
+			weightStr := readLine()
+			weight, err := strconv.ParseFloat(weightStr, 64)
+			if err != nil || weight < 0.1 || weight > 10.0 {
+				showError("Invalid weight")
+				continue
+			}
+
+			a.profile.Interests[interest] = weight
+			if err := a.store.SaveProfile(a.profile); err != nil {
+				showError("Failed to save profile: " + err.Error())
+				continue
+			}
+
+			showSuccess("Interest weight updated")
+			continue
 		case "r", "remove":
 			if len(a.profile.Interests) == 0 {
 				showError("No interests to remove")
