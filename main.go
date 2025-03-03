@@ -102,12 +102,76 @@ var (
 
 	spinnerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#874BFD"))
+
+	// New styles for better visual hierarchy
+	headerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFA07A")).
+			Bold(true).
+			Padding(0, 0, 1, 0)
+
+	menuItemStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#98FB98"))
+
+	selectedStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#2D2D2D")).
+			Foreground(lipgloss.Color("#FFA07A"))
+
+	statusBarStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#333333")).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Padding(0, 1)
+
+	// Add keyboard shortcut hints
+	shortcutStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666666")).
+			Italic(true)
 )
 
 // Define weightedWord type at package level
 type weightedWord struct {
 	word   string
 	weight float64
+}
+
+// Add a status bar component
+type StatusBar struct {
+	CurrentFeeds  int
+	TotalArticles int
+	LastUpdated   time.Time
+	InterestCount int
+}
+
+func (s StatusBar) Render() string {
+	return statusBarStyle.Render(fmt.Sprintf(
+		"Feeds: %d | Articles: %d | Interests: %d | Last Updated: %s",
+		s.CurrentFeeds,
+		s.TotalArticles,
+		s.InterestCount,
+		s.LastUpdated.Format("15:04:05"),
+	))
+}
+
+// Add keyboard navigation support
+type MenuItem struct {
+	Label    string
+	Shortcut string
+	Action   func()
+}
+
+func renderMenu(items []MenuItem, selected int) string {
+	var menu strings.Builder
+	for i, item := range items {
+		style := menuItemStyle
+		if i == selected {
+			style = selectedStyle
+		}
+		menu.WriteString(fmt.Sprintf("%s %s %s\n",
+			style.Render(item.Label),
+			strings.Repeat(" ", 20-len(item.Label)),
+			shortcutStyle.Render(item.Shortcut),
+		))
+	}
+	return menu.String()
 }
 
 func main() {
@@ -412,7 +476,9 @@ func showRecommendations(items []FeedItem, profile *models.UserProfile, store *s
 			subtitleStyle.Render("Recommendation"),
 			i+1,
 			article.Score)
-		displayArticle(article.Item, profile, store)
+		if !displayArticle(article.Item, profile, store) {
+			return // Exit if user wants to go back
+		}
 	}
 }
 
@@ -612,11 +678,13 @@ func modifyInterest(profile *models.UserProfile, store *storage.Storage, reader 
 
 func displayResults(items []FeedItem, profile *models.UserProfile, store *storage.Storage) {
 	for _, item := range items {
-		displayArticle(item, profile, store)
+		if !displayArticle(item, profile, store) {
+			return // Exit the loop if user wants to go back
+		}
 	}
 }
 
-func displayArticle(item FeedItem, profile *models.UserProfile, store *storage.Storage) {
+func displayArticle(item FeedItem, profile *models.UserProfile, store *storage.Storage) bool {
 	fmt.Println(dividerStyle.Render())
 
 	fmt.Printf("%s %s\n",
@@ -641,26 +709,37 @@ func displayArticle(item FeedItem, profile *models.UserProfile, store *storage.S
 
 	fmt.Println(dividerStyle.Render())
 
-	fmt.Print(promptStyle.Render("\nMark as interesting? (y/n/q): "))
+	fmt.Println(infoStyle.Render("\nOptions:"))
+	fmt.Println(shortcutStyle.Render("  [y] Yes, mark as interesting"))
+	fmt.Println(shortcutStyle.Render("  [n] No, skip this article"))
+	fmt.Println(shortcutStyle.Render("  [b] Go back to list"))
+	fmt.Print(promptStyle.Render("\nWhat would you like to do? [y/n/b]: "))
 
 	reader := bufio.NewReader(os.Stdin)
 	response, _ := reader.ReadString('\n')
 	response = strings.ToLower(strings.TrimSpace(response))
 
-	if response == "q" {
-		return
-	}
-
-	if response == "y" {
+	switch response {
+	case "y":
 		profile.UpdateInterests(item.Title + " " + item.Description)
 		profile.ReadArticles[item.Link] = true
 
-		// Save profile after updating
 		if err := store.SaveProfile(profile); err != nil {
 			fmt.Printf("Error saving profile: %v\n", err)
 		} else {
+			showSpinner("Updating interests...", 500*time.Millisecond)
 			fmt.Println(titleStyle.Render("✨ Added to your interests!"))
+			time.Sleep(1 * time.Second)
 		}
+		return true
+	case "b":
+		return false // Signal that we want to go back
+	case "n":
+		return true // Continue to next article
+	default:
+		fmt.Println(errorStyle.Render("\nInvalid option. Skipping article."))
+		time.Sleep(1 * time.Second)
+		return true
 	}
 }
 

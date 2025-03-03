@@ -4,7 +4,25 @@ import (
 	"bufio"
 	"os"
 	"strings"
+	"time"
 )
+
+type Config struct {
+	Theme struct {
+		Dark        bool
+		AccentColor string
+	}
+	Behavior struct {
+		AutoRefreshInterval time.Duration
+		MaxArticlesPerFeed  int
+		DefaultPageSize     int
+	}
+	Display struct {
+		CompactView    bool
+		ShowReadStatus bool
+		DateFormat     string
+	}
+}
 
 func LoadFeedsFromFile(filename string) ([]string, error) {
 	var feeds []string
@@ -24,4 +42,12 @@ func LoadFeedsFromFile(filename string) ([]string, error) {
 	}
 
 	return feeds, scanner.Err()
+}
+
+func LoadConfig() (*Config, error) {
+	// Implementation
+}
+
+func SaveConfig(cfg *Config) error {
+	// Implementation
 }
