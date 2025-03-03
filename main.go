@@ -1073,30 +1073,43 @@ func readKey() (keyPress, error) {
 
 // Update the readLine function to handle arrow keys
 func readLine() string {
+	// Get the original terminal state
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return ""
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
 	var line string
+	var buf [1024]byte
+
 	for {
-		key, err := readKey()
+		n, err := os.Stdin.Read(buf[:])
 		if err != nil {
 			return line
 		}
 
-		// Handle Enter key
-		if key.key == 13 {
-			fmt.Println() // New line after input
-			return line
-		}
+		for i := 0; i < n; i++ {
+			// Handle Enter key
+			if buf[i] == 13 {
+				fmt.Println() // New line after input
+				return line
+			}
 
-		// Handle backspace
-		if key.key == 127 && len(line) > 0 {
-			line = line[:len(line)-1]
-			fmt.Print("\b \b") // Erase character
-			continue
-		}
+			// Handle backspace/delete
+			if buf[i] == 127 || buf[i] == 8 {
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+					fmt.Print("\b \b") // Erase character
+				}
+				continue
+			}
 
-		// Handle printable characters
-		if key.key >= 32 && key.key <= 126 {
-			line += string(key.char)
-			fmt.Print(string(key.char))
+			// Handle printable characters and pasted content
+			if buf[i] >= 32 && buf[i] <= 126 {
+				line += string(buf[i])
+				fmt.Print(string(buf[i]))
+			}
 		}
 	}
 }
