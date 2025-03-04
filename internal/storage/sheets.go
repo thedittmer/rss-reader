@@ -228,13 +228,17 @@ func (s *Storage) ExportToSheets(articles []models.ArticleScore, spreadsheetID s
 
 	// Add article data
 	for _, article := range articles {
+		// Format dates in a more readable way
+		publishedDate := article.Item.Published.Format("2006-01-02 15:04:05")
+		exportedDate := time.Now().Format("2006-01-02 15:04:05")
+
 		values = append(values, []interface{}{
 			article.Item.Title,
 			article.Item.Link,
 			article.Item.FeedSource,
-			article.Item.Published.Format(time.RFC3339),
+			publishedDate,
 			fmt.Sprintf("%.2f", article.Score),
-			time.Now().Format(time.RFC3339),
+			exportedDate,
 		})
 	}
 

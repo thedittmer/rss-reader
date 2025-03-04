@@ -73,6 +73,16 @@ go build
 - Quick navigation with `o[number]` to open specific articles
 - `e` to export recommendations to Google Sheets
 
+### Google Sheets Export
+
+The app can export your recommended articles to Google Sheets with a single keystroke:
+
+1. From the recommendations view, press `e` to export
+2. The app will create a new spreadsheet in your configured folder
+3. Once export is complete, press `o` to open the spreadsheet in your browser
+4. Spreadsheets include a frozen header row for easy navigation
+5. Each spreadsheet has a unique timestamped name to avoid overwriting previous exports
+
 ### Managing Interests
 
 - `i` to manage interests
@@ -127,12 +137,12 @@ https://dev.to/feed
 To use the Google Sheets export feature:
 
 1. Create a new Google Cloud Project
-2. Enable the Google Sheets API
+2. Enable the Google Sheets API and Google Drive API
 3. Create credentials (Service Account)
 4. Download the credentials and save as `credentials.json` in your `.rss-reader` directory
-5. Share your Google Spreadsheet with the service account email
-6. Copy the Spreadsheet ID from the URL (the long string between /d/ and /edit)
-7. When you first use the export feature, you'll be prompted to enter the Spreadsheet ID
+5. Create a folder in Google Drive where exported spreadsheets will be stored
+6. Share the folder with the service account email as a Content Manager
+7. When you export your recommendations, a new spreadsheet will be created in this folder
 
 The exported data includes:
 - Article Title
@@ -141,6 +151,8 @@ The exported data includes:
 - Published Date
 - Interest Score
 - Export Date
+
+All spreadsheets have unique names with timestamps and feature a frozen header row for easy navigation.
 
 ### Default Feeds
 

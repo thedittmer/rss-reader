@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -463,7 +464,6 @@ func (a *App) showRecommendations() {
 		fmt.Printf("%s (s)ort       Toggle sort (relevance/date)\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (v)iew       View article details\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (o)[number]  Open in browser\n", ui.ArrowStyle.Render())
-		fmt.Printf("%s (e)xport     Export to Google Sheets\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (b)ack       Return to main menu\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (h)elp       Show help\n", ui.ArrowStyle.Render())
 		fmt.Println()
@@ -651,26 +651,19 @@ func (a *App) sortRecommendations(articles []models.ArticleScore, sortBy int) []
 // Add a help function for recommendations
 func (a *App) showRecommendationsHelp() {
 	clearScreen()
-	fmt.Println(ui.HeaderStyle.Render("Help - Recommendations"))
+	fmt.Println(ui.HeaderStyle.Render("Recommendations Help"))
 	fmt.Println()
-	fmt.Println(ui.ArrowStyle.Render() + "Available Commands:")
+	fmt.Println(ui.DimStyle.Render("Commands:"))
+	fmt.Printf("%s ↑/↓          Navigate items\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s ←/→          Change pages\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (s)ort       Toggle sort (relevance/date)\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (v)iew       View article details\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (o)[number]  Open in browser\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (e)xport     Export to Google Sheets\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (b)ack       Return to main menu\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s (h)elp       Show this help\n", ui.ArrowStyle.Render())
 	fmt.Println()
-	fmt.Printf("%s next (n)          Go to next page\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s prev (p)          Go to previous page\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s sort (s)          Toggle between relevance and date sorting\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s view (v) [num]    View article details\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s o[num]            Open article in browser\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s export (e)        Export to Google Sheets\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
-	fmt.Println()
-	fmt.Println(ui.DimStyle.Render("Tips:"))
-	fmt.Printf("%s Relevance sorting shows articles based on your interests\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s Date sorting shows newest articles first\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s Use numbers to quickly view specific articles\n", ui.ArrowStyle.Render())
-	fmt.Printf("%s Export to Google Sheets for offline viewing\n", ui.ArrowStyle.Render())
-	fmt.Println()
-	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
+	fmt.Print(ui.CommandStyle.Render("Press Enter to continue..."))
 	readLine()
 }
 
@@ -1243,12 +1236,62 @@ func parseFeed(url string) []models.FeedItem {
 	}
 
 	var items []models.FeedItem
-	for _, item := range feed.Items {
+
+	// Special handling for feeds known to use same timestamp for all items
+	isAggregatorFeed := strings.Contains(url, "lessnews.dev") ||
+		strings.Contains(feed.Title, "aggregator") ||
+		strings.Contains(feed.Title, "digest")
+
+	// Use a base time for progressive offsets if needed
+	baseTime := time.Now()
+	if len(feed.Items) > 0 && feed.Items[0].PublishedParsed != nil {
+		baseTime = *feed.Items[0].PublishedParsed
+	}
+
+	// Process items in reverse for aggregator feeds (newest at bottom)
+	processItems := feed.Items
+	if isAggregatorFeed {
+		// Reverse the items so oldest appear first
+		for i, j := 0, len(processItems)-1; i < j; i, j = i+1, j-1 {
+			processItems[i], processItems[j] = processItems[j], processItems[i]
+		}
+	}
+
+	for i, item := range processItems {
 		// Parse the published date
 		published := time.Now() // default to current time
-		if item.Published != "" {
+
+		// Try to use parsed dates from the feed first
+		if item.PublishedParsed != nil {
+			published = *item.PublishedParsed
+		} else if item.UpdatedParsed != nil {
+			published = *item.UpdatedParsed
+		} else if item.Published != "" {
 			if t, err := parseDate(item.Published); err == nil {
 				published = t
+			}
+		} else if item.Updated != "" {
+			if t, err := parseDate(item.Updated); err == nil {
+				published = t
+			}
+		}
+
+		// For aggregator feeds or when dates are missing, create progressive timestamps
+		if isAggregatorFeed || (item.Published == "" && item.Updated == "") {
+			// Create a progressive offset - newer items will have more recent timestamps
+			// Each item is 2-6 hours apart to ensure visible differences
+			hourOffset := time.Duration((len(processItems)-i)*(2+rand.Intn(4))) * time.Hour
+			// Add some minute/second variation
+			minuteOffset := time.Duration(rand.Intn(60)) * time.Minute
+			secondOffset := time.Duration(rand.Intn(60)) * time.Second
+
+			if isAggregatorFeed {
+				// For aggregator feeds, always use the progressive offset
+				published = baseTime.Add(-hourOffset).Add(-minuteOffset).Add(-secondOffset)
+			} else {
+				// For other feeds, only use random offset if we couldn't get a date
+				randomOffset := time.Duration(rand.Intn(24)) * time.Hour
+				published = published.Add(-randomOffset)
 			}
 		}
 
