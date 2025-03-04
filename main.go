@@ -463,6 +463,7 @@ func (a *App) showRecommendations() {
 		fmt.Printf("%s (s)ort       Toggle sort (relevance/date)\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (v)iew       View article details\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (o)[number]  Open in browser\n", ui.ArrowStyle.Render())
+		fmt.Printf("%s (e)xport     Export to Google Sheets\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (b)ack       Return to main menu\n", ui.ArrowStyle.Render())
 		fmt.Printf("%s (h)elp       Show help\n", ui.ArrowStyle.Render())
 		fmt.Println()
@@ -579,6 +580,52 @@ func (a *App) showRecommendations() {
 			}
 		case 'b': // Back
 			return
+		case 'e': // Export to Google Sheets
+			stop := showProgress("Exporting to Google Sheets")
+			result := a.exportToSheets(sorted)
+			stop()
+
+			if result.Error != nil {
+				clearScreen()
+				fmt.Println(ui.HeaderStyle.Render("Export Error"))
+				fmt.Println()
+				fmt.Println(ui.ErrorStyle.Render(result.Error.Error()))
+				fmt.Println()
+				fmt.Print(ui.CommandStyle.Render("Press Enter to continue..."))
+				readLine()
+				return
+			}
+
+			clearScreen()
+			fmt.Println(ui.HeaderStyle.Render("Export Success"))
+			fmt.Println()
+			fmt.Println(ui.SuccessStyle.Render("Articles exported successfully!"))
+			fmt.Println()
+			fmt.Println(ui.DimStyle.Render("Spreadsheet URL:"))
+			fmt.Printf("\033]8;;%s\033\\%s\033]8;;\033\\\n", result.URL, ui.LinkStyle.Render(result.URL))
+			fmt.Println()
+			fmt.Println(ui.DimStyle.Render("Commands:"))
+			fmt.Printf("%s (o)pen    Open spreadsheet in browser\n", ui.ArrowStyle.Render())
+			fmt.Printf("%s (b)ack    Return to recommendations\n", ui.ArrowStyle.Render())
+			fmt.Println()
+
+			// Wait for command
+			key, err := readKey()
+			if err != nil {
+				return
+			}
+
+			switch key.key {
+			case 'o':
+				if err := openInBrowser(result.URL); err != nil {
+					showError("Failed to open browser")
+				} else {
+					showSuccess("Opened spreadsheet in browser")
+				}
+			case 'b':
+				return
+			}
+			return
 		}
 	}
 }
@@ -613,6 +660,7 @@ func (a *App) showRecommendationsHelp() {
 	fmt.Printf("%s sort (s)          Toggle between relevance and date sorting\n", ui.ArrowStyle.Render())
 	fmt.Printf("%s view (v) [num]    View article details\n", ui.ArrowStyle.Render())
 	fmt.Printf("%s o[num]            Open article in browser\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s export (e)        Export to Google Sheets\n", ui.ArrowStyle.Render())
 	fmt.Printf("%s back (b)          Return to main menu\n", ui.ArrowStyle.Render())
 	fmt.Printf("%s help (h)          Show this help message\n", ui.ArrowStyle.Render())
 	fmt.Println()
@@ -620,6 +668,7 @@ func (a *App) showRecommendationsHelp() {
 	fmt.Printf("%s Relevance sorting shows articles based on your interests\n", ui.ArrowStyle.Render())
 	fmt.Printf("%s Date sorting shows newest articles first\n", ui.ArrowStyle.Render())
 	fmt.Printf("%s Use numbers to quickly view specific articles\n", ui.ArrowStyle.Render())
+	fmt.Printf("%s Export to Google Sheets for offline viewing\n", ui.ArrowStyle.Render())
 	fmt.Println()
 	fmt.Println(ui.DimStyle.Render("Press Enter to return..."))
 	readLine()
@@ -1366,4 +1415,8 @@ func parseDate(dateStr string) (time.Time, error) {
 
 	// Return current time and error if parsing fails
 	return time.Now(), fmt.Errorf("could not parse date: %s", dateStr)
+}
+
+func (a *App) exportToSheets(articles []models.ArticleScore) storage.ExportResult {
+	return a.store.ExportToSheets(articles, "")
 }

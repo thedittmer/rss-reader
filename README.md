@@ -17,6 +17,7 @@ A feature-rich terminal-based RSS reader written in Go, with intelligent article
 - 🎯 Weighted interest system
 - 📈 Interest decay over time
 - 🔒 Secure configuration storage
+- 📑 Export recommendations to Google Sheets
 
 ## Installation
 
@@ -70,6 +71,7 @@ go build
 - `r` to view recommended articles
 - Sort by relevance or date using `s`
 - Quick navigation with `o[number]` to open specific articles
+- `e` to export recommendations to Google Sheets
 
 ### Managing Interests
 
@@ -120,6 +122,25 @@ https://blog.golang.org/feed.atom
 https://news.ycombinator.com/rss
 https://dev.to/feed
 ```
+
+#### Google Sheets Integration
+To use the Google Sheets export feature:
+
+1. Create a new Google Cloud Project
+2. Enable the Google Sheets API
+3. Create credentials (Service Account)
+4. Download the credentials and save as `credentials.json` in your `.rss-reader` directory
+5. Share your Google Spreadsheet with the service account email
+6. Copy the Spreadsheet ID from the URL (the long string between /d/ and /edit)
+7. When you first use the export feature, you'll be prompted to enter the Spreadsheet ID
+
+The exported data includes:
+- Article Title
+- Link
+- Source
+- Published Date
+- Interest Score
+- Export Date
 
 ### Default Feeds
 
@@ -175,3 +196,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Author
 
 Jason Dittmer ([@thedittmer](https://github.com/thedittmer)) 
+
+Successfully exported to Google Sheets!
+URL: https://docs.google.com/spreadsheets/d/[SPREADSHEET_ID]/edit 
